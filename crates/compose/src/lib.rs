@@ -541,29 +541,32 @@ pub fn effect_outline(layer: &Layer) -> Option<&photocraft_doc::vector::Path> {
 /// fill is opaque (it can differ from ours by a fraction of a pixel: psd-tools shape-fx2), the
 /// path where the fill fades out (psd-tools stroke-effects).
 fn effect_shape(layer: &Layer, rect: Rect, cx: &Ctx) -> Vec<f32> {
-    let n = rect.width().max(0) as usize * rect.height().max(0) as usize;
-    let a: Vec<f32> = render_content(layer, rect, cx).map(|b| b.px.iter().map(|p| p[3]).collect()).unwrap_or_else(|| vec![0.0; n]);
-    let Some(path) = effect_outline(layer).filter(|_| n > 0) else { return a };
+    let n = rect.width() as usize * rect.height() as usize;
+    let Some(path) = effect_outline(layer).filter(|_| n > 0) else {
+        return render_content(layer, rect, cx).map(|b| b.px.iter().map(|p| p[3]).collect()).unwrap_or_else(|| vec![0.0; n]);
+    };
+    // Unmasked: the masks scale the shape, they aren't the fill's transparency.
+    let a: Vec<f32> = layer.surface().map(|s| surface_to_buffer(s, rect).px.iter().map(|p| p[3]).collect()).unwrap_or_else(|| vec![0.0; n]);
     let cov = photocraft_vector::path_coverage(path, rect);
     let mv = mask_vals(layer, rect, cx);
     let (w, h) = (rect.width() as usize, rect.height() as usize);
-    let pc: Vec<f32> = cov.iter().enumerate().map(|(i, c)| c * mask_k(&mv, i)).collect();
-    let mut out = a.clone();
+    let mut out = vec![0.0; n];
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
             // A pixel the outline covers is inside, whatever the fill's opacity.
-            if pc[i] >= 1.0 - 1e-3 {
-                out[i] = 1.0;
-                continue;
-            }
-            let mut f = 0.0f32;
-            for yy in y.saturating_sub(1)..(y + 2).min(h) {
-                for xx in x.saturating_sub(1)..(x + 2).min(w) {
-                    f = f.max(a[yy * w + xx]);
+            let v = if cov[i] >= 1.0 - 1e-3 {
+                1.0
+            } else {
+                let mut f = 0.0f32;
+                for yy in y.saturating_sub(1)..(y + 2).min(h) {
+                    for xx in x.saturating_sub(1)..(x + 2).min(w) {
+                        f = f.max(a[yy * w + xx]);
+                    }
                 }
-            }
-            out[i] = (a[i] + (1.0 - f.min(1.0)) * pc[i]).clamp(0.0, 1.0);
+                (a[i] + (1.0 - f.min(1.0)) * cov[i]).clamp(0.0, 1.0)
+            };
+            out[i] = v * mask_k(&mv, i);
         }
     }
     out
@@ -639,10 +642,24 @@ fn render_content(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Buffer> {
 /// The shape `layer`'s effect maps are built from over `rect` (row-major; for the GPU
 /// compositor): its content's alpha (masks applied), joined with the [`effect_outline`] of a
 /// filled shape. Zero for adjustment layers.
+///
+/// See also [`stroke_frame`].
 pub fn layer_shape(doc: &Document, layer: &Layer, rect: Rect) -> Vec<f32> {
     let patterns = pattern::PreparedPatterns::new(&doc.patterns, pattern::PREPARED_PATTERN_BYTES);
     let cx = Ctx::for_doc(doc, &patterns);
     effect_shape(layer, rect, &cx)
+}
+
+/// The frame a gradient stroke `st` of `layer` is laid out in (`effects::FxMaps::stroke_frame`),
+/// from the layer's cached effect maps; `None` when `st` isn't a gradient stroke of the layer.
+/// For the GPU compositor.
+pub fn stroke_frame(doc: &Document, layer: &Layer, st: &photocraft_doc::StrokeFx) -> Option<Rect> {
+    if !matches!(st.paint, photocraft_doc::FxPaint::Gradient(_)) || !effects::has_effects(layer) {
+        return None;
+    }
+    let patterns = pattern::PreparedPatterns::new(&doc.patterns, pattern::PREPARED_PATTERN_BYTES);
+    let cx = Ctx::for_doc(doc, &patterns);
+    effect_maps(layer, &cx).stroke_frame(st)
 }
 
 pub fn surface_to_buffer(s: &Surface, rect: Rect) -> Buffer {
@@ -1346,5 +1363,7 @@ fn blend_into_g(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f
     }
 }
 
+#[cfg(test)]
+mod stroke_tests;
 #[cfg(test)]
 mod tests;
