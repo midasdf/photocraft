@@ -38,6 +38,7 @@ const F_MASK_TEX: u32 = 2u;      // mask pixels live in `mask_tex`
 const F_TEX: u32 = 4u;           // layer pixels live in `layer_tex`
 const F_GRADIENT: u32 = 8u;      // gradient fill (stops in `lut_tex`)
 const F_KNOCKOUT: u32 = 16u;     // effect paint: the layer knocks out the coverage (drop shadow)
+const F_NO_LAYER: u32 = 32u;    // effect merge: A already holds the layer (only the opacity mix)
 const F_VECTOR: u32 = 64u;       // effect paint: shape layer (outside stroke never inside)
 const F_ATOP: u32 = 128u;        // effect merge: clipped layer over an opaque base
 const F_GATE: u32 = 256u;        // effect paint: coverage only inside the layer's shape
@@ -899,7 +900,7 @@ fn fs_fxmerge(in: VOut) -> @location(0) vec4<f32> {
     var w = textureLoad(tex_a, p, 0);
     let l = textureLoad(tex_b, p, 0);
     let c = textureLoad(tex_c, p, 0);
-    if (l.a > 0.0) { w = composite_g(op.mode, w, l, 1.0, (op.flags & F_TEXT_GAMMA) != 0u); }
+    if (l.a > 0.0 && (op.flags & F_NO_LAYER) == 0u) { w = composite_g(op.mode, w, l, 1.0, (op.flags & F_TEXT_GAMMA) != 0u); }
     let atop = (op.flags & F_ATOP) != 0u;
     var before = c;
     if (atop) { before = vec4(c.rgb, 1.0); }
@@ -1028,9 +1029,13 @@ fn fs_mbevelshade(in: VOut) -> @location(0) vec4<f32> {
     let se = op.p0.w;
     let s = textureLoad(layer_tex, p, 0).r;
     var region = s;
-    if (op.p1.y > 0.5) {
-        // Outside parts paint at full strength wherever the shape isn't opaque (edge pixels too).
-        region = select(0.0, 1.0, s < 1.0 - INSIDE_EPS && textureLoad(tex_a, p, 0).r > 1e-5); // effects::BEVEL_H_EPS
+    let on_bevel = textureLoad(tex_a, p, 0).r > 1e-5; // effects::BEVEL_H_EPS
+    if (op.p1.y > 1.5) {
+        // Emboss styles' outside half: strictly outside the shape.
+        region = select(0.0, 1.0, s <= INSIDE_EPS && on_bevel);
+    } else if (op.p1.y > 0.5) {
+        // Outer bevels paint at full strength wherever the shape isn't opaque (edge pixels too).
+        region = select(0.0, 1.0, s < 1.0 - INSIDE_EPS && on_bevel);
     }
     let k = shade - se;
     var v = 0.0;

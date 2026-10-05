@@ -5,8 +5,9 @@
 //! fill opacity) with pattern/gradient/colour overlays, satin, inner glows,
 //! inner shadows, strokes and the inner bevel on top. Exterior effects blend
 //! straight into the backdrop with their own modes; the layer and its
-//! interior effects blend with the layer's mode. Layer opacity applies to
-//! the whole stack; fill opacity only to the layer's own pixels.
+//! interior effects blend with the layer's mode. Emboss and pillow emboss then
+//! shade the composited result (inside and outside halves). Layer opacity
+//! applies to the whole stack; fill opacity only to the layer's own pixels.
 //!
 //! Interior effects are painted relative to the layer's shape and then take the shape's alpha
 //! (an overlay recolours a half-transparent edge without adding coverage). The outside parts
@@ -941,7 +942,9 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
     let (sa, ca) = angle.to_radians().sin_cos();
     let (se, ce) = altitude.to_radians().sin_cos();
     let light_v = [ca * ce, -sa * ce, se];
-    let shade_into = |depth: f32, outer: bool| -> (Map, Map) {
+    // Region: 0 = inside (× the shape's alpha), 1 = under the layer's edge and outside (outer
+    // bevel), 2 = strictly outside the shape (the outside half of emboss styles).
+    let shade_into = |depth: f32, region_kind: u8| -> (Map, Map) {
         let (mut hi, mut sh) = (Map::new(shape.w, shape.h, 0.0), Map::new(shape.w, shape.h, 0.0));
         for y in 0..shape.h as i64 {
             for x in 0..shape.w as i64 {
@@ -951,7 +954,11 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
                 let n = [-gx, -gy, 1.0];
                 let len = (n[0] * n[0] + n[1] * n[1] + 1.0).sqrt();
                 let shade = (n[0] * light_v[0] + n[1] * light_v[1] + n[2] * light_v[2]) / len;
-                let region = if outer { f32::from(shape.v[i] < 1.0 - INSIDE_EPS && hmap.v[i] > BEVEL_H_EPS) } else { shape.v[i] };
+                let region = match region_kind {
+                    0 => shape.v[i],
+                    1 => f32::from(shape.v[i] < 1.0 - INSIDE_EPS && hmap.v[i] > BEVEL_H_EPS),
+                    _ => f32::from(shape.v[i] <= INSIDE_EPS && hmap.v[i] > BEVEL_H_EPS),
+                };
                 let k = shade - se;
                 if k > 0.0 {
                     hi.v[i] = (k / (1.0 - se).max(1e-3)).clamp(0.0, 1.0) * region;
@@ -964,12 +971,12 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
     };
     let maps = match g.paint {
         BevelPaint::Inner | BevelPaint::Outer => {
-            let (hi, sh) = shade_into(g.depth, g.paint == BevelPaint::Outer);
+            let (hi, sh) = shade_into(g.depth, u8::from(g.paint == BevelPaint::Outer));
             vec![hi, sh]
         }
         BevelPaint::Both => {
-            let (hi, sh) = shade_into(g.depth, false);
-            let (ho, so) = shade_into(if g.pillow { -g.depth } else { g.depth }, true);
+            let (hi, sh) = shade_into(g.depth, 0);
+            let (ho, so) = shade_into(if g.pillow { -g.depth } else { g.depth }, 2);
             vec![hi, sh, ho, so]
         }
     };
@@ -1215,7 +1222,7 @@ pub(crate) fn composite_with_effects_prepared(
     }
     for (i, e) in rev() {
         if let Effect::BevelEmboss(b) = e
-            && maps.bevel_paint[i] != BevelPaint::Outer
+            && maps.bevel_paint[i] == BevelPaint::Inner
         {
             let (hi, sh) = (rel(fx(i, 0)), rel(fx(i, 1)));
             paint_color(&mut lay, &hi, rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
@@ -1276,10 +1283,9 @@ pub(crate) fn composite_with_effects_prepared(
     }
     for (i, e) in rev() {
         if let Effect::BevelEmboss(b) = e
-            && maps.bevel_paint[i] != BevelPaint::Inner
+            && maps.bevel_paint[i] == BevelPaint::Outer
         {
-            let k = if maps.bevel_paint[i] == BevelPaint::Both { 2 } else { 0 };
-            let (hi, sh) = (fx(i, k), fx(i, k + 1));
+            let (hi, sh) = (fx(i, 0), fx(i, 1));
             paint_color(&mut work, &hi, rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
             paint_color(&mut work, &sh, rgb(&b.shadow_color), b.shadow.blend, b.shadow.opacity);
         }
@@ -1291,6 +1297,20 @@ pub(crate) fn composite_with_effects_prepared(
     for (wp, lp) in work.px.iter_mut().zip(&lay.px) {
         if lp[3] > 0.0 {
             *wp = psblend::composite_gamma(mode, *wp, *lp, 1.0, gamma);
+        }
+    }
+    // Emboss styles shade the composited layer: the inside half relative to the shape (edge
+    // pixels at full strength), the outside half beyond it. Painting them into the layer before
+    // its (text-gamma) composite left a type layer's lit top edges up to 6/255 dark (psd-tools
+    // layer_effects Emboss: 7.8 → 5.7/255).
+    for (i, e) in rev() {
+        if let Effect::BevelEmboss(b) = e
+            && maps.bevel_paint[i] == BevelPaint::Both
+        {
+            for (k, color, fxc) in [(0, &b.highlight_color, &b.highlight), (1, &b.shadow_color, &b.shadow)] {
+                paint_color(&mut work, &rel(fx(i, k)), rgb(color), fxc.blend, fxc.opacity);
+                paint_color(&mut work, &fx(i, k + 2), rgb(color), fxc.blend, fxc.opacity);
+            }
         }
     }
     // Layer opacity applies to the whole stack.

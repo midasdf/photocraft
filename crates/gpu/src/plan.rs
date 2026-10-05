@@ -338,6 +338,8 @@ enum Cov {
 /// knockout `m × (1 − a × k)` (k in `p4.w`); gate `inside ? m : 0`; rel `inside ? min(m / a, 1) : 0`;
 /// stroke-out `inside ? (vector ? 0 : 1) : m`.
 pub const F_KNOCKOUT: u32 = 16;
+/// Effect merge: A already holds the layer; only mix with the backdrop by the layer's opacity.
+pub const F_NO_LAYER: u32 = 32;
 /// Shape layer (outside strokes never show inside it).
 pub const F_VECTOR: u32 = 64;
 /// Merge onto an opaque clipping base, keeping its alpha.
@@ -926,11 +928,11 @@ impl<'a> Planner<'a> {
                 }
             }
         }
+        let bevel_paint = |b: &photocraft_doc::Bevel| photocraft_compose::effects::bevel_geom(b).paint;
         for &(i, e) in &rev {
             if let Effect::BevelEmboss(b) = e
-                && b.style != photocraft_doc::BevelStyle::OuterBevel
+                && bevel_paint(b) == photocraft_compose::effects::BevelPaint::Inner
             {
-                // Inner part (emboss styles: maps 0–1 inside, 2–3 outside).
                 l = self.paint(
                     l,
                     content,
@@ -990,10 +992,9 @@ impl<'a> Planner<'a> {
         }
         for &(i, e) in &rev {
             if let Effect::BevelEmboss(b) = e
-                && let paint = photocraft_compose::effects::bevel_geom(b).paint
-                && paint != photocraft_compose::effects::BevelPaint::Inner
+                && bevel_paint(b) == photocraft_compose::effects::BevelPaint::Outer
             {
-                let k = if paint == photocraft_compose::effects::BevelPaint::Both { 2 } else { 0 };
+                let k = 0;
                 w = self.paint(
                     w,
                     content,
@@ -1009,16 +1010,53 @@ impl<'a> Planner<'a> {
             }
         }
 
-        let mut p = Pass::new(Kernel::FxMerge, 0);
-        p.a = Some(w);
-        p.b = Some(l);
-        p.c = Some(self.retain(backdrop));
-        p.mode = if layer.blend == BlendMode::PassThrough { BlendMode::Normal } else { layer.blend };
-        p.opacity = layer.opacity;
-        p.flags = if atop { F_ATOP } else { 0 } | gamma_flag(layer);
-        p.extra[3] = photocraft_compose::text_gamma(layer);
-        p.clip = Some(clip);
-        let merged = self.emit(p);
+        let mode = if layer.blend == BlendMode::PassThrough { BlendMode::Normal } else { layer.blend };
+        let late: Vec<(usize, &'a photocraft_doc::Bevel)> = rev
+            .iter()
+            .filter_map(|&(i, e)| if let Effect::BevelEmboss(b) = e { Some((i, b)) } else { None })
+            .filter(|(_, b)| bevel_paint(b) == photocraft_compose::effects::BevelPaint::Both)
+            .collect();
+        let merged = if late.is_empty() {
+            let mut p = Pass::new(Kernel::FxMerge, 0);
+            p.a = Some(w);
+            p.b = Some(l);
+            p.c = Some(self.retain(backdrop));
+            p.mode = mode;
+            p.opacity = layer.opacity;
+            p.flags = if atop { F_ATOP } else { 0 } | gamma_flag(layer);
+            p.extra[3] = photocraft_compose::text_gamma(layer);
+            p.clip = Some(clip);
+            self.emit(p)
+        } else {
+            // Emboss styles shade the composited layer (`composite_with_effects`): merge at full
+            // opacity, paint the inside (relative to the shape) and outside halves, then mix.
+            let mut p = Pass::new(Kernel::FxMerge, 0);
+            p.a = Some(w);
+            p.b = Some(l);
+            p.c = Some(self.retain(w));
+            p.mode = mode;
+            p.opacity = 1.0;
+            p.flags = gamma_flag(layer);
+            p.extra[3] = photocraft_compose::text_gamma(layer);
+            p.clip = Some(clip);
+            let mut m = self.emit(p);
+            for (i, b) in late {
+                for (k, color, fxc) in [(0, &b.highlight_color, &b.highlight), (1, &b.shadow_color, &b.shadow)] {
+                    let paint = Paint::Color(color.to_rgb());
+                    m = self.paint(m, content, Cov::Map(map(i, k), 0.0), &paint, fxc.blend, fxc.opacity, F_REL, clip, sb);
+                    m = self.paint(m, content, Cov::Map(map(i, k + 2), 0.0), &paint, fxc.blend, fxc.opacity, 0, clip, sb);
+                }
+            }
+            let mut p = Pass::new(Kernel::FxMerge, 0);
+            p.b = Some(self.retain(m));
+            p.a = Some(m);
+            p.c = Some(self.retain(backdrop));
+            p.mode = mode;
+            p.opacity = layer.opacity;
+            p.flags = if atop { F_ATOP } else { 0 } | F_NO_LAYER;
+            p.clip = Some(clip);
+            self.emit(p)
+        };
         self.release(content);
 
         // Write the clipped result back into the backdrop (in place when nothing else holds it).
