@@ -51,6 +51,7 @@ pub mod links;
 pub mod liquify_ui;
 pub mod menu_catalog;
 pub mod menus;
+pub mod move_ui;
 pub mod new_doc_ui;
 pub mod notices;
 pub mod outline;
@@ -273,6 +274,8 @@ pub struct PhotocraftApp {
     pub(crate) crop: crop_ui::CropState,
     /// Type tool layout cache: ((doc, revision, layer), layout).
     pub(crate) type_layout: Option<((u64, u64, u64), std::sync::Arc<photocraft_text::TextLayout>)>,
+    /// Move tool drag shown live (`move_ui`).
+    pub(crate) move_preview: Option<move_ui::MovePreview>,
     /// Channel thumbnails for one document snapshot; view-only revisions reuse their pixels.
     channel_thumbs: Option<(DocId, std::sync::Weak<Document>, Vec<egui::TextureHandle>)>,
     /// Channels panel overlays / channel views drawn over the canvas, per document id.
@@ -332,6 +335,7 @@ impl PhotocraftApp {
             channel_thumbs: None,
             channel_views: HashMap::new(),
             type_layout: None,
+            move_preview: None,
             guide_drag: None,
             crop: Default::default(),
             hover_doc: None,

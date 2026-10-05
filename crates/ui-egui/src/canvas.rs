@@ -223,6 +223,10 @@ fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Arc<Document>
     if let Some(shown) = crate::adjust_preview::display_doc(app, idx) {
         return shown;
     }
+    // Move tool drag: the moving layers at the pointer.
+    if let Some(shown) = crate::move_ui::display_doc(app, idx) {
+        return shown;
+    }
     let st = &app.session.documents()[idx];
     if let Some(l) = live_stroke(app, idx) {
         return (l.stroke.doc.clone(), l.display_key());
@@ -282,21 +286,30 @@ pub fn navigator_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
     if app.gpu.is_none() {
         return ensure_texture(app, ctx, idx).map(|(t, _)| t);
     }
-    let (revision, id) = app.session.documents().get(idx).map(|st| (st.revision, st.doc.id))?;
+    // Keyed by the document snapshot, not its revision: selecting a layer changes no pixels.
+    let (snapshot, id) = app.session.documents().get(idx).map(|st| (std::sync::Arc::downgrade(&st.doc), st.doc.id))?;
     let (doc, preview_key) = display_doc(app, idx);
     let (display, display_key) = canvas_display(app, &doc);
     let preview_key = preview_key ^ display_key;
     let key = egui::Id::new(("navigator", id.0));
-    let cached: Option<(u64, u64, egui::TextureHandle)> = ctx.data(|d| d.get_temp(key));
+    type Cached = (std::sync::Weak<Document>, u64, egui::TextureHandle);
+    let cached: Option<Cached> = ctx.data(|d| d.get_temp(key));
     if let Some((r, p, t)) = &cached
-        && (*r, *p) == (revision, preview_key)
+        && r.ptr_eq(&snapshot)
+        && *p == preview_key
+    {
+        return Some(t.id());
+    }
+    // While a Move drag is under way the navigator keeps its image and catches up on release.
+    if let Some((_, _, t)) = &cached
+        && crate::move_ui::showing(app)
     {
         return Some(t.id());
     }
     // While an adjustment dialog's settings are changing, the navigator keeps its image and
     // catches up once they settle (a thumbnail composite per change would cost more than the canvas).
     if let Some((r, _, t)) = &cached
-        && *r == revision
+        && r.ptr_eq(&snapshot)
         && crate::adjust_preview::settling(app, NAVIGATOR_SETTLE_MS)
     {
         ctx.request_repaint_after(std::time::Duration::from_millis(NAVIGATOR_SETTLE_MS as u64));
@@ -312,7 +325,7 @@ pub fn navigator_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
         None => ctx.load_texture(format!("navigator-{}", id.0), image, TextureOptions::LINEAR),
     };
     app.perf.span("navigator", crate::gpu_canvas::now_ms() - t0);
-    ctx.data_mut(|d| d.insert_temp(key, (revision, preview_key, tex.clone())));
+    ctx.data_mut(|d| d.insert_temp(key, (snapshot, preview_key, tex.clone())));
     Some(tex.id())
 }
 
@@ -393,9 +406,32 @@ fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), now: (u64, u6
     {
         return Some(r);
     }
+    // Between a Move drag's offsets: where the moving layers were and are (Auto-Select's pick
+    // at the press changes no pixels).
+    if (seen.0 == now.0 || (seen.0 + 1 == now.0 && last_damage.is_some_and(|r| r.is_empty())))
+        && let Some(st) = app.session.documents().get(idx)
+        && let Some(r) = crate::move_ui::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
+    {
+        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
+    }
     let l = live_stroke(app, idx).filter(|l| seen.0 == now.0 && l.display_key() == now.1)?;
     let r = l.since(seen.1 ^ display_key)?;
     Some(if r.is_empty() { r } else { r.inflate(effect_reach(&l.stroke.doc.layers)) })
+}
+
+/// Document `doc`'s canvas caches showed a preview that the edit just committed reproduces
+/// (`was_preview` tells its keys): count it as the document itself, so the commit's damage rect
+/// refreshes only that area instead of everything.
+pub(crate) fn shown_as_document(app: &mut PhotocraftApp, doc: photocraft_doc::DocId, was_preview: impl Fn(u64) -> bool) {
+    let display_key = app.session.active().map_or(0, |st| canvas_display(app, &st.doc).1);
+    if let Some(c) = app.canvases.get_mut(&doc) {
+        if was_preview(c.preview_key ^ display_key) {
+            c.preview_key = display_key;
+        }
+        if was_preview(c.tex_preview_key ^ display_key) {
+            c.tex_preview_key = display_key;
+        }
+    }
 }
 
 /// How far beyond an edit's damage rect the composite can change: layer effects (shadows, glows,
@@ -1508,7 +1544,8 @@ fn draw_drag_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXfor
             painter.add(egui::Shape::line(pts.to_vec(), Stroke::new(1.0, Color32::WHITE)));
             painter.add(egui::Shape::dashed_line(&pts, Stroke::new(1.0, Color32::BLACK), 3.0, 3.0));
         }
-        Tool::Move => {
+        // The layers themselves follow the pointer (`move_ui`); the arrow only when they can't.
+        Tool::Move if !crate::move_ui::showing(app) => {
             let off = vec2(((last[0] - d.start[0]) as f32) * xf.zoom, ((last[1] - d.start[1]) as f32) * xf.zoom);
             painter.arrow(xf.to_screen(d.start[0] as f32, d.start[1] as f32), off, Stroke::new(2.0, crate::theme::Tokens::get(painter.ctx()).accent));
         }
@@ -1745,9 +1782,7 @@ fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
         }
         Tool::Move => {
             let (dx, dy) = ((end[0] - d.start[0]).round(), (end[1] - d.start[1]).round());
-            if dx != 0.0 || dy != 0.0 {
-                let _ = app.run("layer.translate", json!({"dx": dx, "dy": dy}));
-            }
+            crate::move_ui::finish(app, dx, dy);
         }
         _ => {}
     }
