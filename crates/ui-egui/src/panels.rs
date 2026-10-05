@@ -527,9 +527,20 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         widgets::checkbox(ui, &mut app.ui.tool_options.sample_all_layers, "All Layers");
                     }
                     Tool::Gradient if t.pro => {
-                        gradient_swatch(ui, app.session.tools.foreground, app.session.tools.background);
+                        // Live "Gradient" (a Gradient Fill layer) or "Classic gradient" (pixels).
+                        let mut classic = app.ui.tool_options.gradient_classic;
+                        if widgets::dropdown(ui, "gradient-mode", &mut classic, &[(false, "Gradient"), (true, "Classic gradient")], 118.0) {
+                            app.ui.tool_options.gradient_classic = classic;
+                        }
+                        let (fg, bg) = (app.session.tools.foreground, app.session.tools.background);
+                        if classic {
+                            gradient_swatch(ui, fg, bg);
+                        } else {
+                            crate::gradient_ui::preset_swatch(ui, &app.session.presets.gradient.resolve(fg, bg));
+                        }
                         widgets::vline(ui, 22.0);
                         ui.spacing_mut().item_spacing.x = 2.0;
+                        let before = app.ui.tool_options.clone();
                         for (style, icon, tip) in [
                             ("linear", "blend", "Linear Gradient"),
                             ("radial", "circle", "Radial Gradient"),
@@ -547,6 +558,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         widgets::value_field(ui, &mut app.ui.tool_options.fill_opacity, 1.0..=100.0, "%", 62.0);
                         widgets::checkbox(ui, &mut app.ui.tool_options.gradient_reverse, "Reverse");
                         widgets::checkbox(ui, &mut app.ui.tool_options.gradient_dither, "Dither");
+                        // Live mode: the options also change a selected gradient fill layer.
+                        crate::gradient_ui::options_changed(app, &before);
                     }
                     Tool::Crop if t.pro => {
                         let o = &mut app.ui.tool_options;
@@ -1785,6 +1798,10 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         // Transform, Align, the kind's sections and Quick Actions.
         crate::layer_props_ui::properties(app, ui, &layer);
     } else {
+        if matches!(layer.content, LayerContent::Fill(photocraft_doc::Fill::Gradient { .. })) {
+            crate::gradient_ui::properties(app, ui, &layer);
+            ui.add_space(6.0);
+        }
         layer_controls(app, ui, &layer);
         if matches!(layer.content, LayerContent::Text(_)) {
             crate::type_tool::type_properties(app, ui);
