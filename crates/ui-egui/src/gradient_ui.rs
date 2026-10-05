@@ -588,10 +588,11 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
             ui.spacing_mut().item_spacing.x = LABEL_GAP;
             label(ui, "Style");
             let mut s = cmds::style_name(style).to_string();
-            let opts: Vec<(String, &str)> = [("linear", "Linear"), ("radial", "Radial"), ("angle", "Angle"), ("reflected", "Reflected"), ("diamond", "Diamond")]
-                .iter()
-                .map(|(k, l)| (k.to_string(), *l))
-                .collect();
+            let opts: Vec<(String, &str)> =
+                [("linear", "Linear"), ("radial", "Radial"), ("angle", "Angle"), ("reflected", "Reflected"), ("diamond", "Diamond")]
+                    .iter()
+                    .map(|(k, l)| (k.to_string(), *l))
+                    .collect();
             let w = (ui.available_width() - 24.0).max(60.0);
             if widgets::dropdown(ui, "gradient-fill-style", &mut s, &opts, w) {
                 runs.push(json!({"style": s}));
