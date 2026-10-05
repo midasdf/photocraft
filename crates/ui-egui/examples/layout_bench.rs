@@ -25,6 +25,7 @@ mod layout_doc;
 use std::time::Instant;
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2};
+use egui_kittest::kittest::Queryable;
 use photocraft_doc::{LayerContent, LayerId};
 use photocraft_ui_egui::canvas::ViewXform;
 use photocraft_ui_egui::state::Tool;
@@ -55,7 +56,8 @@ struct Rows {
 
 impl Rows {
     /// A row from frame times already taken.
-    fn add(&mut self, name: &str, mut v: Vec<f64>) {
+    fn add(&mut self, name: &str, v: Vec<f64>) {
+        let mut v: Vec<f64> = v.into_iter().filter(|t| t.is_finite()).collect();
         if v.is_empty() {
             return;
         }
@@ -185,6 +187,7 @@ fn main() {
     let smart = find("Product 1", &|c| matches!(c, LayerContent::Smart(_)));
     let hero = find("Hero", &|c| matches!(c, LayerContent::Group(_)));
     let headline = find("Make things that last", &|c| matches!(c, LayerContent::Text(_)));
+    let products = find("Products", &|c| matches!(c, LayerContent::Group(_)));
 
     let navigator = args.iter().any(|a| a == "--navigator");
     let t = Instant::now();
@@ -237,6 +240,23 @@ fn main() {
         k += 1;
         let t = Instant::now();
         select(&mut h, picks[k % picks.len()]);
+        (ms(t) + frame(&mut h)).max(frame(&mut h))
+    });
+    // A real click on a Layers panel row (rows carry their layer's name for accessibility).
+    let names = ["Gallery", "Products", "Hero", "Header", "Footer"];
+    rows.time("click a Layers panel row", || {
+        k += 1;
+        let Some(p) = h.query_by_label(names[k % names.len()]).map(|n| n.rect().center()) else { return f64::NAN };
+        h.event(Event::PointerMoved(p));
+        let a = frame(&mut h);
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        let b = frame(&mut h);
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        a.max(b).max(frame(&mut h)).max(frame(&mut h))
+    });
+    rows.time("open / close a group (Layers panel)", || {
+        let t = Instant::now();
+        let _ = h.state_mut().run("layer.setExpanded", json!({"layer": products.0}));
         (ms(t) + frame(&mut h)).max(frame(&mut h))
     });
     let tools = [Key::V, Key::B, Key::M, Key::T, Key::U, Key::E];
