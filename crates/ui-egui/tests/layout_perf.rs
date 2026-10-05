@@ -152,6 +152,15 @@ fn selecting_recomposites_nothing_and_hiding_only_the_layer() {
         h.run_steps(3);
         assert_eq!(h.state().perf.last_refresh, "untouched", "selecting a layer must not recomposite");
     }
+    // The Properties panel's Levels histogram isn't recomputed for a selection change either.
+    let levels = doc(&h).layers.iter().rev().find(|l| matches!(l.content, LayerContent::Adjustment(_))).map(|l| l.id).expect("levels layer");
+    h.state_mut().run("layer.select", json!({"layer": levels.0})).expect("select");
+    h.run_steps(3);
+    assert!(h.state().perf.spans.contains_key("histogram"), "the Levels editor shows a histogram");
+    h.state_mut().perf.spans.remove("histogram");
+    h.state_mut().run("layer.select", json!({"layer": levels.0})).expect("select");
+    h.run_steps(3);
+    assert!(!h.state().perf.spans.contains_key("histogram"), "selecting changed no pixels");
     // Hiding a text layer refreshes its area, not the whole canvas.
     h.state_mut().run("layer.setProps", json!({"layer": k.text.0, "visible": false})).expect("hide");
     h.run_steps(2);
