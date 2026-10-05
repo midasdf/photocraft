@@ -25,6 +25,8 @@ fn op_from_psd(v: i16) -> PathOp {
         0 => PathOp::Exclude,
         2 => PathOp::Subtract,
         3 => PathOp::Intersect,
+        // Continues the previous subpath's shape component.
+        -1 => PathOp::Join,
         _ => PathOp::Combine,
     }
 }
@@ -35,6 +37,7 @@ fn op_to_psd(op: PathOp) -> i16 {
         PathOp::Subtract => 2,
         PathOp::Intersect => 3,
         PathOp::Exclude => 0,
+        PathOp::Join => -1,
     }
 }
 
@@ -567,10 +570,11 @@ mod tests {
         let rec = path_to_records(&p, 64, 64);
         let back = path_from_records(&rec, 64, 64);
         assert_eq!(back, p);
-        for op in [PathOp::Combine, PathOp::Subtract, PathOp::Intersect, PathOp::Exclude] {
+        for op in [PathOp::Combine, PathOp::Subtract, PathOp::Intersect, PathOp::Exclude, PathOp::Join] {
             assert_eq!(op_from_psd(op_to_psd(op)), op);
         }
-        assert_eq!(op_from_psd(-1), PathOp::Combine);
+        assert_eq!(op_from_psd(-1), PathOp::Join);
+        assert_eq!(op_from_psd(7), PathOp::Combine);
     }
 
     fn vmsk_with(initial_fill: bool, ops: &[i16]) -> Vec<u8> {
