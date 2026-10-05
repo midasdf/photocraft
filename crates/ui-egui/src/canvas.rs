@@ -1556,6 +1556,7 @@ fn draw_drag_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXfor
 /// Tool state machine. Shared by mouse input and automation.
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
     // View › Snap / Snap To and smart guides (snap_ui.rs).
+    let raw = ev;
     let ev = crate::snap_ui::filter_event(app, ev, mods);
     if crate::transform_tool::pointer(app, ev, mods) {
         return;
@@ -1691,9 +1692,9 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 crate::vector_ui::pen_up(app);
             }
             let Some(mut d) = app.drag.take() else { return };
-            // A Move-tool click (no pointer move in between) selects, it never moves: snapping
+            // A Move-tool click (released where it was pressed) selects, it never moves: snapping
             // the release point would otherwise nudge the layer onto a nearby edge.
-            if d.tool == Tool::Move && d.points.len() < 2 {
+            if d.tool == Tool::Move && d.points.len() < 2 && matches!(raw, ToolEvent::Up { x, y } if [x, y] == d.start) {
                 app.move_preview = None;
                 return;
             }

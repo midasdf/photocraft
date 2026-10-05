@@ -1319,8 +1319,13 @@ fn layer_row(
     // Rows are painted: name them for screen readers and UI tests.
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &l.name));
     // A row scrolled out of view only keeps its place (#125): a layout's hundreds of rows would
-    // otherwise lay out names, icons and thumbnails every frame.
-    if !ui.is_rect_visible(rect) && !resp.context_menu_opened() && ctx.data(|d| d.get_temp::<String>(egui::Id::new(("rename", l.id.0)))).is_none() {
+    // otherwise lay out names, icons and thumbnails every frame. Group rows stay whole: their
+    // disclosure triangle is a widget (accessibility, scroll-to).
+    if !ui.is_rect_visible(rect)
+        && !l.is_group()
+        && !resp.context_menu_opened()
+        && ctx.data(|d| d.get_temp::<String>(egui::Id::new(("rename", l.id.0)))).is_none()
+    {
         return;
     }
     let painter = ui.painter_at(rect.expand(1.0));
