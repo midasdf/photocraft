@@ -13,9 +13,10 @@
 //! of strokes blend onto the backdrop with their own modes, an upper stroke covering the
 //! lower ones. Drop shadows are knocked out only through see-through fill.
 //!
-//! Shapes come from the layer's alpha (after its mask). Strokes measure distances with a
-//! 5 × 5 chamfer metric seeded at sub-pixel edge offsets (as Photoshop does); other effects
-//! use an exact Euclidean distance transform. Soft falloffs are Gaussian blurs.
+//! Shapes come from the layer's alpha (after its mask). Strokes and spread / choke measure
+//! distances with a 5 × 5 chamfer metric seeded at sub-pixel edge offsets (as Photoshop does);
+//! precise glows and chiselled bevels use an exact Euclidean distance transform. Soft falloffs
+//! are two box blurs (a tent).
 
 use photocraft_color::blend::BlendMode;
 use photocraft_doc::Pattern;
@@ -242,9 +243,9 @@ fn dist_outside(s: &Map) -> Vec<f32> {
 /// Distance metric for effect distance fields.
 #[derive(Clone, Copy, PartialEq)]
 enum Metric {
-    /// Exact Euclidean (spread/choke dilation, glows, bevels).
+    /// Exact Euclidean (precise glows, bevels).
     Euclidean,
-    /// 5 × 5 chamfer (strokes; see [`chamfer_nearest`]).
+    /// 5 × 5 chamfer (strokes, spread / choke; see [`chamfer_nearest`]).
     Chamfer,
 }
 
@@ -326,12 +327,16 @@ fn blur(m: &mut Map, size: f32) {
     }
 }
 
-/// Grows the shape by `r` pixels (anti-aliased), keeping the original soft edge.
+/// Grows the shape by `r` pixels (anti-aliased), keeping the original soft edge. Distances use
+/// the 5 × 5 chamfer metric, as for strokes: Photoshop's spread of a group drop shadow around an
+/// ellipse (ag-psd group-drop-shadows) is round at 0° and 45° and falls short in between, peaking
+/// near 15° where the chamfer metric overestimates most (5/255 lighter with an exact Euclidean
+/// dilation, within 2/255 with the chamfer).
 fn dilate(s: &Map, r: f32) -> Map {
     if r <= 0.0 {
         return s.clone();
     }
-    let d = dist_outside(s);
+    let d = dist_outside_by(s, Metric::Chamfer);
     let mut out = s.clone();
     for (o, d) in out.v.iter_mut().zip(d) {
         // Partly covered pixels (distance sentinel < 0) grow by `r` from their own coverage, so a
@@ -1305,15 +1310,15 @@ fn mix_premul(a: [f32; 4], b: [f32; 4], k: f32) -> [f32; 4] {
 /// `glow_map`, `bevel_maps` and `build_maps`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FieldKind {
-    /// `dist_outside` of the shape: spread of drop shadows and softer outer glows, precise outer
-    /// and centre glows, bevels.
+    /// `dist_outside` of the shape: precise outer and centre glows, bevels.
     Outside,
     /// `dist_inside` of the shape: precise edge inner glows, bevels.
     Inside,
-    /// `dist_outside` of `1 - alpha`: choke of inner shadows, softer inner glows.
-    OutsideInverse,
-    /// Stroke distance outside the shape.
+    /// Chamfer distance outside the shape: outside strokes, and the spread of drop shadows and
+    /// softer outer glows ([`dilate`]).
     StrokeOutside,
+    /// Chamfer distance outside `1 - alpha`: the choke of inner shadows and softer inner glows.
+    ChokeInside,
     /// Stroke distance inside the shape.
     StrokeInside,
     /// Stroke distance outside a shape layer's outline (from its local coverage).
@@ -1326,8 +1331,8 @@ pub fn distance_field(kind: FieldKind, alpha: Vec<f32>, w: usize, h: usize) -> V
     match kind {
         FieldKind::Outside => dist_outside(&s),
         FieldKind::Inside => dist_inside(&s),
-        FieldKind::OutsideInverse => dist_outside(&s.map(|a| 1.0 - a)),
         FieldKind::StrokeOutside => dist_outside_by(&s, Metric::Chamfer),
+        FieldKind::ChokeInside => dist_outside_by(&s.map(|a| 1.0 - a), Metric::Chamfer),
         FieldKind::StrokeInside => dist_inside_by(&s, Metric::Chamfer),
         FieldKind::StrokeOutsideVector => dist_outside_by(&local_coverage(&s), Metric::Chamfer),
     }
@@ -1400,6 +1405,19 @@ mod tests {
         assert!((at(1, 3) - (5f32.sqrt() + 1.0)).abs() < 1e-5, "knight + straight, not √10");
         assert!((at(2, 3) - (5f32.sqrt() + std::f32::consts::SQRT_2)).abs() < 1e-5);
         assert!(near.iter().all(|&n| n == 0));
+    }
+
+    #[test]
+    fn spread_dilates_with_the_chamfer_metric() {
+        // One opaque pixel grown by 3 px: at offset (1, 3) the chamfer distance is √5 + 1 = 3.236
+        // (Euclidean 3.162), so the anti-aliased rim keeps 3 + 0.5 − (3.236 − 0.5) = 0.764.
+        let mut m = Map::new(9, 9, 0.0);
+        m.v[4 * 9 + 4] = 1.0;
+        let d = dilate(&m, 3.0);
+        assert!((d.v[7 * 9 + 5] - 0.764).abs() < 1e-3, "{}", d.v[7 * 9 + 5]);
+        // (2, 3): √5 + √2 = 3.650 (Euclidean 3.606) leaves 0.350; axis steps are exact.
+        assert!((d.v[7 * 9 + 6] - (4.0 - 5f32.sqrt() - std::f32::consts::SQRT_2)).abs() < 1e-4, "{}", d.v[7 * 9 + 6]);
+        assert_eq!(d.v[4 * 9 + 7], 1.0);
     }
 
     #[test]

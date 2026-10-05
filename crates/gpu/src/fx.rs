@@ -290,7 +290,7 @@ pub(crate) fn program_with(e: &Effect, light: &GlobalLight, vector_shape: bool, 
             if r > 0.0 {
                 // dist_outside of the shifted map is the shifted field (integer offsets; shifted-in
                 // pixels are far away for a drop shadow, inside for an inner shadow).
-                let f = b.field(if inner { FieldKind::OutsideInverse } else { FieldKind::Outside }, r);
+                let f = b.field(if inner { FieldKind::ChokeInside } else { FieldKind::StrokeOutside }, r);
                 let d = if dx == 0.0 && dy == 0.0 {
                     f
                 } else {
@@ -321,7 +321,7 @@ pub(crate) fn program_with(e: &Effect, light: &GlobalLight, vector_shape: bool, 
                     let (r, bw) = photocraft_compose::effects::spread_split(g.size, g.spread);
                     let mut m = src;
                     if r > 0.0 {
-                        let d = b.field(if inner { FieldKind::OutsideInverse } else { FieldKind::Outside }, r);
+                        let d = b.field(if inner { FieldKind::ChokeInside } else { FieldKind::StrokeOutside }, r);
                         m = b.dilate(src, d, r);
                     }
                     let m = b.blur(m, bw);
@@ -681,14 +681,9 @@ mod tests {
                 shape[y * w + x] = (90.0 - r).clamp(0.0, 1.0) * if (x / 13 + y / 17) % 5 == 0 { 0.6 } else { 1.0 };
             }
         }
-        for kind in [
-            FieldKind::Outside,
-            FieldKind::Inside,
-            FieldKind::OutsideInverse,
-            FieldKind::StrokeOutside,
-            FieldKind::StrokeInside,
-            FieldKind::StrokeOutsideVector,
-        ] {
+        for kind in
+            [FieldKind::Outside, FieldKind::Inside, FieldKind::ChokeInside, FieldKind::StrokeOutside, FieldKind::StrokeInside, FieldKind::StrokeOutsideVector]
+        {
             let reach = 9;
             let whole = photocraft_compose::effects::distance_field(kind, shape.clone(), w, h);
             let banded = field(kind, reach, &shape, region, region);
