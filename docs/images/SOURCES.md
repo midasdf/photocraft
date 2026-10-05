@@ -19,3 +19,9 @@ Screenshots must use famous public-domain artwork (or content made in the app), 
 | File | Content | Source / licence |
 |---|---|---|
 | `assets/dict/en_US-scowl-50.txt.gz` | English word list (72,403 words, American spelling) for Edit › Check Spelling | [SCOWL](http://wordlist.aspell.net/) 2020.12.07, size 50, by Kevin Atkinson: permissive licence (use, copy, modify, distribute and sell, keeping the notice); full text and build recipe in `assets/dict/LICENSE-SCOWL.txt`. |
+
+# Test data
+
+| Path | Content | Source / licence |
+|---|---|---|
+| `corpus/photoshop/**/*.psd` | 256 Photoshop oracle PSDs (smart filters, layer-style effect shapes, the text engine, adjustments in every mode and depth); see `corpus/photoshop/README.md` | Authored from scratch by the PhotoCraft contributors with Adobe Photoshop 2026 driven by `tools/photoshop-oracles/generate.jsx` (generated gradients, shapes and text; no third-party images, Photoshop presets or ICC profiles). MIT OR Apache-2.0. |

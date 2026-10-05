@@ -3,7 +3,9 @@ plan/
 /target
 target/
 /dist
-/corpus
+/corpus/*
+# The Photoshop oracle set is committed (see corpus/photoshop/README.md).
+!/corpus/photoshop/
 /log
 /secrets
 /temp
