@@ -1265,6 +1265,9 @@ type Program = (i32, [[f32; 4]; 4], Option<Vec<[f32; 4096]>>);
 /// LUT rows of a pass (4096 entries each), shared between plans.
 pub type Lut = std::sync::Arc<Vec<[f32; 4096]>>;
 
+/// A [`Program`] with its LUT shared.
+type SharedProgram = (i32, [[f32; 4]; 4], Option<Lut>);
+
 type Memo<T> = std::sync::Mutex<std::collections::HashMap<u64, T>>;
 
 fn memo_key(key: &str) -> u64 {
@@ -1299,7 +1302,7 @@ fn memo_lut(key: &str, build: impl FnOnce() -> Option<Vec<[f32; 4096]>>) -> Opti
 }
 
 /// [`adjustment_program`] with its LUT shared like [`memo_lut`]'s (keyed by the settings).
-fn memo_program(adj: &Adjustment, transfer: Transfer) -> (i32, [[f32; 4]; 4], Option<Lut>) {
+fn memo_program(adj: &Adjustment, transfer: Transfer) -> SharedProgram {
     let fresh = || {
         let (k, p, l) = adjustment_program(adj, transfer);
         (k, p, l.map(std::sync::Arc::new))
@@ -1308,7 +1311,7 @@ fn memo_program(adj: &Adjustment, transfer: Transfer) -> (i32, [[f32; 4]; 4], Op
     if matches!(adj, Adjustment::ColorLookup { .. }) {
         return fresh();
     }
-    static CACHE: std::sync::OnceLock<Memo<(i32, [[f32; 4]; 4], Option<Lut>)>> = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<Memo<SharedProgram>> = std::sync::OnceLock::new();
     memo(CACHE.get_or_init(Default::default), &format!("{adj:?} {transfer:?}"), fresh)
 }
 
