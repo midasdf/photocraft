@@ -1318,6 +1318,11 @@ fn layer_row(
     layer_drag_and_drop(ctx, ui, l, rect, &resp, actions);
     // Rows are painted: name them for screen readers and UI tests.
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &l.name));
+    // A row scrolled out of view only keeps its place (#125): a layout's hundreds of rows would
+    // otherwise lay out names, icons and thumbnails every frame.
+    if !ui.is_rect_visible(rect) && !resp.context_menu_opened() && ctx.data(|d| d.get_temp::<String>(egui::Id::new(("rename", l.id.0)))).is_none() {
+        return;
+    }
     let painter = ui.painter_at(rect.expand(1.0));
     if t.pro {
         if selected {
@@ -2099,6 +2104,9 @@ fn effect_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer, depth: usi
     }
     for (i, (name, on, kind)) in rows.into_iter().enumerate() {
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
         if resp.hovered() {
             ui.painter().rect_filled(rect, 0.0, t.hover.gamma_multiply(0.35));
         }
