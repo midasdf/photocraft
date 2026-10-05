@@ -240,7 +240,17 @@ fn composite(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32) -> vec4<f32> {
     return vec4(rgb, ao);
 }
 
-// `psblend::composite_gamma`: coverage mixed in a gamma space (type layers, gamma 1.45).
+// `psblend::text_encode` / `text_decode`: linear light raised to 1 / gamma.
+fn text_enc(c: vec3<f32>, g: f32) -> vec3<f32> {
+    let l = vec3(srgb_to_linear(max(c.r, 0.0)), srgb_to_linear(max(c.g, 0.0)), srgb_to_linear(max(c.b, 0.0)));
+    return pow(l, vec3(1.0 / g));
+}
+fn text_dec(v: vec3<f32>, g: f32) -> vec3<f32> {
+    let l = pow(max(v, vec3(0.0)), vec3(g));
+    return vec3(linear_to_srgb(l.r), linear_to_srgb(l.g), linear_to_srgb(l.b));
+}
+
+// `psblend::composite_gamma`: coverage mixed in the text blending space (type layers, 1.45).
 fn composite_g(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32, gamma_on: bool) -> vec4<f32> {
     if (!gamma_on) { return composite(mode, b, s, opacity); }
     let ab = b.a;
@@ -250,8 +260,8 @@ fn composite_g(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32, gamma_on: bo
     let ao = as_ + ab * (1.0 - as_);
     if (ao <= 0.0) { return vec4(0.0); }
     let g = op.p4.w; // psblend::text_gamma
-    let pw = (1.0 - as_) * ab * pow(max(b.rgb, vec3(0.0)), vec3(g)) + (1.0 - ab) * as_ * pow(max(s.rgb, vec3(0.0)), vec3(g)) + as_ * ab * pow(max(bl, vec3(0.0)), vec3(g));
-    return vec4(pow(pw / ao, vec3(1.0 / g)), ao);
+    let pw = (1.0 - as_) * ab * text_enc(b.rgb, g) + (1.0 - ab) * as_ * text_enc(s.rgb, g) + as_ * ab * text_enc(bl, g);
+    return vec4(text_dec(pw / ao, g), ao);
 }
 
 // photocraft_color::convert::{srgb_to_lab, lab_to_srgb} (D50, Bradford to sRGB).
