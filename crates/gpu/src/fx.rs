@@ -385,12 +385,12 @@ pub(crate) fn program_with(e: &Effect, light: &GlobalLight, vector_shape: bool, 
             let (sa, ca) = angle.to_radians().sin_cos();
             let (se, ce) = altitude.to_radians().sin_cos();
             let lut = contour_lut(&bv.gloss_contour).map(Arc::new);
-            // Region (`bevel_maps`' shade_into): 0 inside, 1 under the edge and outside, 2 strictly
-            // outside.
+            // Region (`fs_mbevelshade`): 0 inside, 1 under the edge and outside, 2 / 3 emboss /
+            // pillow emboss (both halves in one map).
             let passes: Vec<(f32, f32)> = match g.paint {
                 BevelPaint::Inner => vec![(g.depth, 0.0)],
                 BevelPaint::Outer => vec![(g.depth, 1.0)],
-                BevelPaint::Both => vec![(g.depth, 0.0), (if g.pillow { -g.depth } else { g.depth }, 2.0)],
+                BevelPaint::Both => vec![(g.depth, if g.pillow { 3.0 } else { 2.0 })],
             };
             let mut out = 0;
             for (depth, region) in &passes {

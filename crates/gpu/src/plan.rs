@@ -1029,7 +1029,7 @@ impl<'a> Planner<'a> {
             self.emit(p)
         } else {
             // Emboss styles shade the composited layer (`composite_with_effects`): merge at full
-            // opacity, paint the inside (relative to the shape) and outside halves, then mix.
+            // opacity, paint their maps (inside and outside halves), then mix.
             let mut p = Pass::new(Kernel::FxMerge, 0);
             p.a = Some(w);
             p.b = Some(l);
@@ -1042,9 +1042,7 @@ impl<'a> Planner<'a> {
             let mut m = self.emit(p);
             for (i, b) in late {
                 for (k, color, fxc) in [(0, &b.highlight_color, &b.highlight), (1, &b.shadow_color, &b.shadow)] {
-                    let paint = Paint::Color(color.to_rgb());
-                    m = self.paint(m, content, Cov::Map(map(i, k), 0.0), &paint, fxc.blend, fxc.opacity, F_REL, clip, sb);
-                    m = self.paint(m, content, Cov::Map(map(i, k + 2), 0.0), &paint, fxc.blend, fxc.opacity, 0, clip, sb);
+                    m = self.paint(m, content, Cov::Map(map(i, k), 0.0), &Paint::Color(color.to_rgb()), fxc.blend, fxc.opacity, 0, clip, sb);
                 }
             }
             let mut p = Pass::new(Kernel::FxMerge, 0);

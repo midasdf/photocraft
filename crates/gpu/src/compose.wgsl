@@ -1020,25 +1020,33 @@ fn fs_mbevelh(in: VOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_mbevelshade(in: VOut) -> @location(0) vec4<f32> {
     let p = local(in.pos);
-    let depth = op.p1.x;
+    let s = textureLoad(layer_tex, p, 0).r;
+    // effects::bevel_maps' on_bevel: the height above BEVEL_H_EPS (emboss styles: or a
+    // 4-neighbour's).
+    var hmax = ra(p);
+    if (op.p1.y > 1.5) {
+        hmax = max(max(hmax, max(ra(p + vec2(1, 0)), ra(p - vec2(1, 0)))), max(ra(p + vec2(0, 1)), ra(p - vec2(0, 1))));
+    }
+    let outside = select(0.0, 1.0, s < 1.0 - INSIDE_EPS && hmax > 1e-5);
+    // p1.y: 0 inside (× alpha), 1 under the edge and outside (outer bevel), 2 / 3 emboss / pillow
+    // emboss (inside where the shape is, plus the outside half, flipped for pillow, × 1 − alpha).
+    if (op.p1.y < 0.5) { return mout(bevel_part(p, op.p1.x, s)); }
+    if (op.p1.y < 1.5) { return mout(bevel_part(p, op.p1.x, outside)); }
+    var inner = 0.0;
+    if (s > INSIDE_EPS) { inner = bevel_part(p, op.p1.x, s); }
+    let od = select(op.p1.x, -op.p1.x, op.p1.y > 2.5);
+    return mout(inner + bevel_part(p, od, outside) * (1.0 - min(s, 1.0)));
+}
+
+// One bevel shading value (`bevel_maps`' shade_into): highlight (p1.z = 0) or shadow amount for
+// height-gradient scale `depth`, times `region`, through the gloss contour.
+fn bevel_part(p: vec2<i32>, depth: f32, region: f32) -> f32 {
     let gx = (ra(p + vec2(1, 0)) - ra(p - vec2(1, 0))) * 0.5 * depth;
     let gy = (ra(p + vec2(0, 1)) - ra(p - vec2(0, 1))) * 0.5 * depth;
     let n = vec3(-gx, -gy, 1.0);
     let len = sqrt(n.x * n.x + n.y * n.y + 1.0);
     let shade = (n.x * op.p0.x + n.y * op.p0.y + n.z * op.p0.z) / len;
     let se = op.p0.w;
-    let s = textureLoad(layer_tex, p, 0).r;
-    var region = s;
-    // effects::bevel_maps' on_bevel: the pixel's or a 4-neighbour's height above BEVEL_H_EPS.
-    let hmax = max(max(ra(p), max(ra(p + vec2(1, 0)), ra(p - vec2(1, 0)))), max(ra(p + vec2(0, 1)), ra(p - vec2(0, 1))));
-    let on_bevel = hmax > 1e-5;
-    if (op.p1.y > 1.5) {
-        // Emboss styles' outside half: strictly outside the shape.
-        region = select(0.0, 1.0, s <= INSIDE_EPS && on_bevel);
-    } else if (op.p1.y > 0.5) {
-        // Outer bevels paint at full strength wherever the shape isn't opaque (edge pixels too).
-        region = select(0.0, 1.0, s < 1.0 - INSIDE_EPS && on_bevel);
-    }
     let k = shade - se;
     var v = 0.0;
     if (op.p1.z > 0.5) {
@@ -1047,7 +1055,7 @@ fn fs_mbevelshade(in: VOut) -> @location(0) vec4<f32> {
         v = clamp(k / max(1.0 - se, 1e-3), 0.0, 1.0) * region;
     }
     if (op.p1.w > 0.5) { v = lut(0, v); }
-    return mout(v);
+    return v;
 }
 
 // Bevel texture (`effects::bevel_height`): A + k × luminance of the pattern (× its alpha; 1 −

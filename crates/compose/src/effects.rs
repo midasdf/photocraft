@@ -945,12 +945,15 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
     let (sa, ca) = angle.to_radians().sin_cos();
     let (se, ce) = altitude.to_radians().sin_cos();
     let light_v = [ca * ce, -sa * ce, se];
-    // Region: 0 = inside (× the shape's alpha), 1 = under the layer's edge and outside (outer
-    // bevel), 2 = strictly outside the shape (the outside half of emboss styles).
-    // A pixel is on the bevel where its shading reads a raised height: its own or a 4-neighbour's
-    // (the last pixel past the blur's reach still slopes; psd-tools layer_effects' emboss shadow
-    // runs one row past it).
-    let on_bevel = |x: i64, y: i64| [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| hmap.get(x + dx, y + dy) > BEVEL_H_EPS);
+    // Region: 0 = inside (× the shape's alpha), 1 = under the layer's edge and outside.
+    // A pixel is on the bevel where its height is raised. Emboss styles also shade the last pixel
+    // past the blur's reach (a raised 4-neighbour: it still slopes; psd-tools layer_effects'
+    // emboss shadow runs one row past it), outer bevels don't (Photoshop oracle
+    // bevel-outer-smooth).
+    let reach_past = g.paint == BevelPaint::Both;
+    let on_bevel = |x: i64, y: i64| {
+        hmap.get(x, y) > BEVEL_H_EPS || (reach_past && [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| hmap.get(x + dx, y + dy) > BEVEL_H_EPS))
+    };
     let shade_into = |depth: f32, region_kind: u8| -> (Map, Map) {
         let (mut hi, mut sh) = (Map::new(shape.w, shape.h, 0.0), Map::new(shape.w, shape.h, 0.0));
         for y in 0..shape.h as i64 {
@@ -961,11 +964,7 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
                 let n = [-gx, -gy, 1.0];
                 let len = (n[0] * n[0] + n[1] * n[1] + 1.0).sqrt();
                 let shade = (n[0] * light_v[0] + n[1] * light_v[1] + n[2] * light_v[2]) / len;
-                let region = match region_kind {
-                    0 => shape.v[i],
-                    1 => f32::from(shape.v[i] < 1.0 - INSIDE_EPS && on_bevel(x, y)),
-                    _ => f32::from(shape.v[i] <= INSIDE_EPS && on_bevel(x, y)),
-                };
+                let region = if region_kind == 0 { shape.v[i] } else { f32::from(shape.v[i] < 1.0 - INSIDE_EPS && on_bevel(x, y)) };
                 let k = shade - se;
                 if k > 0.0 {
                     hi.v[i] = (k / (1.0 - se).max(1e-3)).clamp(0.0, 1.0) * region;
@@ -982,9 +981,17 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
             vec![hi, sh]
         }
         BevelPaint::Both => {
+            // One map per colour over the whole bevel: the inside half where the shape is (× its
+            // alpha), the outside half (pillow: facing the other way) for the rest of each pixel.
+            // A 1 % edge pixel of a pillow emboss takes the outside shading (Photoshop oracle
+            // bevel-pillow-smooth), a 75 % one of an emboss mostly the inside (layer_effects).
             let (hi, sh) = shade_into(g.depth, 0);
-            let (ho, so) = shade_into(if g.pillow { -g.depth } else { g.depth }, 2);
-            vec![hi, sh, ho, so]
+            let (ho, so) = shade_into(if g.pillow { -g.depth } else { g.depth }, 1);
+            let mix = |a: Map, b: Map| -> Map {
+                let v = a.v.iter().zip(&b.v).zip(&shape.v).map(|((x, y), s)| if *s > INSIDE_EPS { *x } else { 0.0 } + y * (1.0 - s.min(1.0))).collect();
+                Map { w: a.w, h: a.h, v }
+            };
+            vec![mix(hi, ho), mix(sh, so)]
         }
     };
     (maps, g.paint)
@@ -1306,18 +1313,15 @@ pub(crate) fn composite_with_effects_prepared(
             *wp = psblend::composite_gamma(mode, *wp, *lp, 1.0, gamma);
         }
     }
-    // Emboss styles shade the composited layer: the inside half relative to the shape (edge
-    // pixels at full strength), the outside half beyond it. Painting them into the layer before
-    // its (text-gamma) composite left a type layer's lit top edges up to 6/255 dark (psd-tools
-    // layer_effects Emboss: 7.8 → 5.7/255).
+    // Emboss styles shade the composited layer (their maps cover inside and outside). Painting
+    // them into the layer before its (text-gamma) composite left a type layer's lit top edges up
+    // to 6/255 dark (psd-tools layer_effects Emboss: 7.8 → 5.7/255).
     for (i, e) in rev() {
         if let Effect::BevelEmboss(b) = e
             && maps.bevel_paint[i] == BevelPaint::Both
         {
-            for (k, color, fxc) in [(0, &b.highlight_color, &b.highlight), (1, &b.shadow_color, &b.shadow)] {
-                paint_color(&mut work, &rel(fx(i, k)), rgb(color), fxc.blend, fxc.opacity);
-                paint_color(&mut work, &fx(i, k + 2), rgb(color), fxc.blend, fxc.opacity);
-            }
+            paint_color(&mut work, &fx(i, 0), rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
+            paint_color(&mut work, &fx(i, 1), rgb(&b.shadow_color), b.shadow.blend, b.shadow.opacity);
         }
     }
     // Layer opacity applies to the whole stack.
@@ -1567,13 +1571,13 @@ mod tests {
         let l = GlobalLight::default();
         let (e, paint) =
             bevel_maps(&shape, &bevel_of(BevelStyle::Emboss, BevelTechnique::Smooth), &l, &no_tex(), &PreparedPatterns::new(&[], PREPARED_PATTERN_BYTES));
-        assert_eq!((paint, e.len()), (BevelPaint::Both, 4));
+        assert_eq!((paint, e.len()), (BevelPaint::Both, 2));
         let at = |m: &Map, x: usize, y: usize| m.v[y * 40 + x];
         // Emboss: the slope across the top edge faces the light on both sides.
-        assert!(at(&e[0], 20, 10) > 0.3 && at(&e[2], 20, 9) > 0.3);
+        assert!(at(&e[0], 20, 10) > 0.3 && at(&e[0], 20, 9) > 0.3);
         let (p, _) =
             bevel_maps(&shape, &bevel_of(BevelStyle::PillowEmboss, BevelTechnique::Smooth), &l, &no_tex(), &PreparedPatterns::new(&[], PREPARED_PATTERN_BYTES));
-        assert!(at(&p[0], 20, 10) > 0.3 && at(&p[3], 20, 9) > 0.3, "pillow: outside top edge in shadow");
+        assert!(at(&p[0], 20, 10) > 0.3 && at(&p[1], 20, 9) > 0.3, "pillow: outside top edge in shadow");
     }
 
     #[test]
@@ -1592,8 +1596,8 @@ mod tests {
         let (m, _) = bevel_maps(&shape, &b, &GlobalLight::default(), &no_tex(), &PreparedPatterns::new(&[], PREPARED_PATTERN_BYTES));
         let reach = tent_kernel(bevel_geom(&b).width).0 as usize;
         let row = 39 + reach + 1; // last shape row + reach + 1: height 0, neighbour above raised
-        assert!(m[3].v[row * 60 + 30] > 0.0, "{}", m[3].v[row * 60 + 30]);
-        assert_eq!(m[3].v[(row + 1) * 60 + 30], 0.0);
+        assert!(m[1].v[row * 60 + 30] > 0.0, "{}", m[1].v[row * 60 + 30]);
+        assert_eq!(m[1].v[(row + 1) * 60 + 30], 0.0);
     }
 
     #[test]
