@@ -847,6 +847,23 @@ mod tests {
     }
 
     #[test]
+    fn shift_snaps_live_drags_to_45_degrees() {
+        let mut app = app_with_gradient("linear");
+        let shift = egui::Modifiers::SHIFT;
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, shift);
+        crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 70.0, y: 62.0, pressure: 1.0 }, shift);
+        crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 90.0, y: 84.0 }, shift);
+        let g = get(&mut app);
+        let (fx, fy, tx, ty) = (g["from"][0].as_f64().unwrap(), g["from"][1].as_f64().unwrap(), g["to"][0].as_f64().unwrap(), g["to"][1].as_f64().unwrap());
+        assert!(((tx - fx) - (ty - fy)).abs() < 1e-2 && tx > 80.0, "45°: {g}");
+        // Dragging the end handle with ⇧ snaps too (horizontal here).
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: tx, y: ty, pressure: 1.0 }, shift);
+        crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 120.0, y: 26.0 }, shift);
+        let g = get(&mut app);
+        assert!((g["to"][1].as_f64().unwrap() - fy).abs() < 1e-2, "horizontal: {g}");
+    }
+
+    #[test]
     fn classic_mode_paints_pixels() {
         let mut app = app_with_gradient("linear");
         app.ui.tool_options.gradient_classic = true;

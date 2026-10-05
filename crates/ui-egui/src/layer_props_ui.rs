@@ -131,6 +131,10 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
             ui.add_space(ROW_GAP);
         }
     }
+    // Gradient fills: their gradient first, as in Photoshop's Properties panel.
+    if matches!(layer.content, LayerContent::Fill(photocraft_doc::Fill::Gradient { .. })) {
+        crate::gradient_ui::properties(app, ui, layer);
+    }
     if section(ui, "align", "Align and Distribute") {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -162,7 +166,6 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
     match &layer.content {
         LayerContent::Text(_) => crate::type_tool::type_properties(app, ui),
         LayerContent::Shape(_) => crate::vector_ui::shape_properties(app, ui, layer.id),
-        LayerContent::Fill(photocraft_doc::Fill::Gradient { .. }) => crate::gradient_ui::properties(app, ui, layer),
         _ => {}
     }
     // Re-read: a section above may have changed the layer (e.g. point to paragraph type).
