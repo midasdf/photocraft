@@ -1,5 +1,10 @@
-//! Optional real-file corpus: `corpus/psd/**/*.{psd,psb}` at the workspace
-//! root (gitignored; see `corpus/psd/SOURCES.md`). Skips silently if absent.
+//! Real-file corpora:
+//! - `corpus/psd/**/*.{psd,psb}` (optional, gitignored; see `corpus/psd/SOURCES.md`): skips
+//!   silently if absent;
+//! - `corpus/photoshop/**` (committed): oracle files authored from scratch with Photoshop by
+//!   `tools/photoshop-oracles/generate.jsx` (smart filters, effect shapes, the text engine,
+//!   adjustments in every mode and depth); see `corpus/photoshop/README.md`. Its floors are
+//!   always asserted.
 //!
 //! For each file: parse → document → flatten, compared with the file's own
 //! merged composite (Photoshop's rendering) as the oracle; then document →
@@ -40,6 +45,126 @@ const ROUNDTRIP_TOL: f32 = 1.0 / 255.0 + 1e-5;
 const PASS_FLOOR: usize = 113;
 /// Files whose export → re-import renders the same as the import.
 const ROUNDTRIP_FLOOR: usize = 169;
+/// `corpus/photoshop` oracle passes (of 256 files).
+const PS_PASS_FLOOR: usize = 72;
+/// `corpus/photoshop` export → re-import round trips.
+const PS_ROUNDTRIP_FLOOR: usize = 256;
+
+#[derive(Default)]
+struct Summary {
+    files: usize,
+    pass: usize,
+    diff: usize,
+    skipped: usize,
+    errors: usize,
+    rt_same: usize,
+    rt_diff: Vec<String>,
+    /// Feature group (first one or two path components) → (pass, total).
+    groups: std::collections::BTreeMap<String, (usize, usize)>,
+}
+
+fn group_of(name: &str, depth: usize) -> String {
+    let parts: Vec<&str> = name.split(['/', '\\']).collect();
+    if parts.len() <= 1 {
+        return ".".into();
+    }
+    parts[..depth.min(parts.len() - 1)].join("/")
+}
+
+/// Import, flatten and compare every PSD under `root` with its merged composite; also check that
+/// our export re-imports to the same rendering. `group_depth` path components name the groups.
+fn run_corpus(root: &Path, label: &str, group_depth: usize) -> Summary {
+    let mut files = Vec::new();
+    collect(root, &mut files);
+    files.sort();
+    let mut s = Summary { files: files.len(), ..Default::default() };
+    eprintln!("{:<60} {:>6} {:>9} {:>8}  status", "file", "layers", "max_err", "bad_px%");
+    for p in &files {
+        let name = p.strip_prefix(root).unwrap_or(p).display().to_string();
+        let group = s.groups.entry(group_of(&name, group_depth)).or_default();
+        group.1 += 1;
+        let bytes = std::fs::read(p).unwrap_or_default();
+        let file = match PsdFile::from_bytes(&bytes) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{name:<60} {:>6} {:>9} {:>8}  PARSE-ERROR {e}", "-", "-", "-");
+                s.errors += 1;
+                continue;
+            }
+        };
+        let imp = match import(&name, &bytes) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("{name:<60} IMPORT-ERROR {e}");
+                s.errors += 1;
+                continue;
+            }
+        };
+        let doc = &imp.document;
+        // Export must always succeed, re-parse and re-import.
+        let reimported = match export(doc, "x.psd", &ExportOptions::default()) {
+            Ok(r) => {
+                if let Err(e) = PsdFile::from_bytes(&r.bytes) {
+                    eprintln!("{name:<60} REEXPORT-PARSE-ERROR {e}");
+                    s.errors += 1;
+                    continue;
+                }
+                match import(&name, &r.bytes) {
+                    Ok(i) => i.document,
+                    Err(e) => {
+                        eprintln!("{name:<60} REIMPORT-ERROR {e}");
+                        s.errors += 1;
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{name:<60} EXPORT-ERROR {e}");
+                s.errors += 1;
+                continue;
+            }
+        };
+        let ours = photocraft_compose::flatten(doc).px;
+        // Our own export must not change how the document renders.
+        let again = photocraft_compose::flatten(&reimported).px;
+        let rt = if again.len() == ours.len() { common::max_diff(&ours, &again) } else { f32::INFINITY };
+        if rt <= ROUNDTRIP_TOL {
+            s.rt_same += 1;
+        } else {
+            s.rt_diff.push(format!("{name} ({rt:.4})"));
+        }
+        let layers = doc.layer_count();
+        if file.has_real_merged_data() == Some(false) || file.layers().is_empty() {
+            eprintln!("{name:<60} {layers:>6} {:>9} {:>8}  SKIP (no layers or no real composite)", "-", "-");
+            s.skipped += 1;
+            continue;
+        }
+        let Ok(merged) = merged_composite(&file) else {
+            eprintln!("{name:<60} {layers:>6} {:>9} {:>8}  SKIP (merged not decodable)", "-", "-");
+            s.skipped += 1;
+            continue;
+        };
+        let m = if merged.len() == ours.len() { common::max_diff(&ours, &merged) } else { f32::INFINITY };
+        let bad = ours.iter().zip(&merged).filter(|(a, b)| (0..4).any(|c| (a[c] * a[3] - b[c] * b[3]).abs() > PASS_TOL)).count();
+        let pct = 100.0 * bad as f32 / ours.len().max(1) as f32;
+        let status = if m <= PASS_TOL {
+            s.pass += 1;
+            group.0 += 1;
+            "PASS"
+        } else {
+            s.diff += 1;
+            "DIFF"
+        };
+        let notes: Vec<&str> = imp.warnings.iter().map(String::as_str).take(2).collect();
+        eprintln!("{name:<60} {layers:>6} {:>9.4} {:>7.2}%  {status} {}", m, pct, notes.join(" | "));
+    }
+    eprintln!("{label}: {} files: {} pass (<= 2/255), {} differ, {} skipped, {} errors", s.files, s.pass, s.diff, s.skipped, s.errors);
+    for (g, (p, n)) in &s.groups {
+        eprintln!("{label}:   {g:<28} {p:>4} / {n:<4} pass");
+    }
+    eprintln!("{label}: export -> re-import renders the same for {} files; differs for {}: {}", s.rt_same, s.rt_diff.len(), s.rt_diff.join(", "));
+    s
+}
 
 #[test]
 fn corpus_import_flatten_oracle() {
@@ -52,95 +177,34 @@ fn corpus_import_flatten_oracle() {
         assert!(env.is_none(), "PHOTOCRAFT_CORPUS is set but {} is not a directory", root.display());
         return;
     }
-    let mut files = Vec::new();
-    collect(&root, &mut files);
-    files.sort();
-    let (mut pass, mut diff, mut skipped, mut errors) = (0, 0, 0, 0);
-    let (mut rt_same, mut rt_diff) = (0, Vec::new());
-    eprintln!("{:<60} {:>6} {:>9} {:>8}  status", "file", "layers", "max_err", "bad_px%");
-    for p in &files {
-        let name = p.strip_prefix(&root).unwrap_or(p).display().to_string();
-        let bytes = std::fs::read(p).unwrap_or_default();
-        let file = match PsdFile::from_bytes(&bytes) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("{name:<60} {:>6} {:>9} {:>8}  PARSE-ERROR {e}", "-", "-", "-");
-                errors += 1;
-                continue;
-            }
-        };
-        let imp = match import(&name, &bytes) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("{name:<60} IMPORT-ERROR {e}");
-                errors += 1;
-                continue;
-            }
-        };
-        let doc = &imp.document;
-        // Export must always succeed, re-parse and re-import.
-        let reimported = match export(doc, "x.psd", &ExportOptions::default()) {
-            Ok(r) => {
-                if let Err(e) = PsdFile::from_bytes(&r.bytes) {
-                    eprintln!("{name:<60} REEXPORT-PARSE-ERROR {e}");
-                    errors += 1;
-                    continue;
-                }
-                match import(&name, &r.bytes) {
-                    Ok(i) => i.document,
-                    Err(e) => {
-                        eprintln!("{name:<60} REIMPORT-ERROR {e}");
-                        errors += 1;
-                        continue;
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("{name:<60} EXPORT-ERROR {e}");
-                errors += 1;
-                continue;
-            }
-        };
-        let ours = photocraft_compose::flatten(doc).px;
-        // Our own export must not change how the document renders.
-        let again = photocraft_compose::flatten(&reimported).px;
-        let rt = if again.len() == ours.len() { common::max_diff(&ours, &again) } else { f32::INFINITY };
-        if rt <= ROUNDTRIP_TOL {
-            rt_same += 1;
-        } else {
-            rt_diff.push(format!("{name} ({rt:.4})"));
-        }
-        let layers = doc.layer_count();
-        if file.has_real_merged_data() == Some(false) || file.layers().is_empty() {
-            eprintln!("{name:<60} {layers:>6} {:>9} {:>8}  SKIP (no layers or no real composite)", "-", "-");
-            skipped += 1;
-            continue;
-        }
-        let Ok(merged) = merged_composite(&file) else {
-            eprintln!("{name:<60} {layers:>6} {:>9} {:>8}  SKIP (merged not decodable)", "-", "-");
-            skipped += 1;
-            continue;
-        };
-        let m = common::max_diff(&ours, &merged);
-        let bad = ours.iter().zip(&merged).filter(|(a, b)| (0..4).any(|c| (a[c] * a[3] - b[c] * b[3]).abs() > PASS_TOL)).count();
-        let pct = 100.0 * bad as f32 / ours.len().max(1) as f32;
-        let status = if m <= PASS_TOL {
-            pass += 1;
-            "PASS"
-        } else {
-            diff += 1;
-            "DIFF"
-        };
-        let notes: Vec<&str> = imp.warnings.iter().map(String::as_str).take(2).collect();
-        eprintln!("{name:<60} {layers:>6} {:>9.4} {:>7.2}%  {status} {}", m, pct, notes.join(" | "));
-    }
-    eprintln!("io corpus: {} files: {pass} pass (<= 2/255), {diff} differ, {skipped} skipped, {errors} errors", files.len());
-    eprintln!("io corpus: export -> re-import renders the same for {rt_same} files; differs for {}: {}", rt_diff.len(), rt_diff.join(", "));
+    let s = run_corpus(&root, "io corpus", 1);
     if std::env::var_os("PHOTOCRAFT_CORPUS_STRICT").is_some() {
-        assert_eq!(errors, 0);
+        assert_eq!(s.errors, 0);
     }
     if env.is_some() {
-        assert!(pass >= PASS_FLOOR, "oracle pass count {pass} fell below the floor {PASS_FLOOR}");
-        assert!(rt_same >= ROUNDTRIP_FLOOR, "export round trip {rt_same} fell below the floor {ROUNDTRIP_FLOOR}: {rt_diff:?}");
+        assert!(s.pass >= PASS_FLOOR, "oracle pass count {} fell below the floor {PASS_FLOOR}", s.pass);
+        assert!(s.rt_same >= ROUNDTRIP_FLOOR, "export round trip {} fell below the floor {ROUNDTRIP_FLOOR}: {:?}", s.rt_same, s.rt_diff);
     }
+}
+
+/// The committed Photoshop oracle set (`corpus/photoshop`): grouped by feature
+/// (`smart-filters`, `effects`, `text`, `adjustments/<mode><bits>`). `PHOTOCRAFT_PS_CORPUS`
+/// points it at another directory (e.g. a fresh `generate.sh` output).
+#[test]
+fn photoshop_oracle_corpus() {
+    let env = std::env::var_os("PHOTOCRAFT_PS_CORPUS").filter(|v| !v.is_empty());
+    let root = match &env {
+        Some(v) => PathBuf::from(v),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/photoshop"),
+    };
+    if !root.is_dir() {
+        assert!(env.is_none(), "PHOTOCRAFT_PS_CORPUS is set but {} is not a directory", root.display());
+        return;
+    }
+    let s = run_corpus(&root, "photoshop oracles", 2);
+    if std::env::var_os("PHOTOCRAFT_CORPUS_STRICT").is_some() {
+        assert_eq!(s.errors, 0);
+    }
+    assert!(s.pass >= PS_PASS_FLOOR, "photoshop oracle pass count {} fell below the floor {PS_PASS_FLOOR}", s.pass);
+    assert!(s.rt_same >= PS_ROUNDTRIP_FLOOR, "photoshop oracle round trip {} fell below the floor {PS_ROUNDTRIP_FLOOR}: {:?}", s.rt_same, s.rt_diff);
 }
