@@ -831,7 +831,7 @@ pub const BEVEL_H_EPS: f32 = 1e-5;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BevelGeom {
     pub paint: BevelPaint,
-    /// Box width of the smooth height blur (size; half the size for emboss styles).
+    /// Box width of the smooth height blur (size; half the size, rounded up, for emboss styles).
     pub width: f32,
     /// Height-map gradient scale: depth × width (smooth) or depth × size (chisel), signed by
     /// direction.
@@ -850,7 +850,10 @@ pub fn bevel_geom(b: &Bevel) -> BevelGeom {
         BevelStyle::Emboss | BevelStyle::PillowEmboss => BevelPaint::Both,
         BevelStyle::InnerBevel | BevelStyle::StrokeEmboss => BevelPaint::Inner,
     };
-    let width = if emboss { size / 2.0 } else { size };
+    // Emboss styles straddle the edge with half the size, rounded up to whole pixels: a 41 px
+    // emboss blurs over 21 (psd-tools layer_effects: 20.5 left narrow letter parts up to
+    // 5.7/255 dark, 21 is within 2.2).
+    let width = if emboss { (size / 2.0).ceil() } else { size };
     let smooth = b.technique == BevelTechnique::Smooth;
     let sign = if b.up { 1.0 } else { -1.0 };
     BevelGeom {
@@ -944,6 +947,10 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
     let light_v = [ca * ce, -sa * ce, se];
     // Region: 0 = inside (× the shape's alpha), 1 = under the layer's edge and outside (outer
     // bevel), 2 = strictly outside the shape (the outside half of emboss styles).
+    // A pixel is on the bevel where its shading reads a raised height: its own or a 4-neighbour's
+    // (the last pixel past the blur's reach still slopes; psd-tools layer_effects' emboss shadow
+    // runs one row past it).
+    let on_bevel = |x: i64, y: i64| [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| hmap.get(x + dx, y + dy) > BEVEL_H_EPS);
     let shade_into = |depth: f32, region_kind: u8| -> (Map, Map) {
         let (mut hi, mut sh) = (Map::new(shape.w, shape.h, 0.0), Map::new(shape.w, shape.h, 0.0));
         for y in 0..shape.h as i64 {
@@ -956,8 +963,8 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx, pat
                 let shade = (n[0] * light_v[0] + n[1] * light_v[1] + n[2] * light_v[2]) / len;
                 let region = match region_kind {
                     0 => shape.v[i],
-                    1 => f32::from(shape.v[i] < 1.0 - INSIDE_EPS && hmap.v[i] > BEVEL_H_EPS),
-                    _ => f32::from(shape.v[i] <= INSIDE_EPS && hmap.v[i] > BEVEL_H_EPS),
+                    1 => f32::from(shape.v[i] < 1.0 - INSIDE_EPS && on_bevel(x, y)),
+                    _ => f32::from(shape.v[i] <= INSIDE_EPS && on_bevel(x, y)),
                 };
                 let k = shade - se;
                 if k > 0.0 {
@@ -1567,6 +1574,26 @@ mod tests {
         let (p, _) =
             bevel_maps(&shape, &bevel_of(BevelStyle::PillowEmboss, BevelTechnique::Smooth), &l, &no_tex(), &PreparedPatterns::new(&[], PREPARED_PATTERN_BYTES));
         assert!(at(&p[0], 20, 10) > 0.3 && at(&p[3], 20, 9) > 0.3, "pillow: outside top edge in shadow");
+    }
+
+    #[test]
+    fn emboss_width_rounds_up_and_shades_past_the_blur() {
+        let mut b = bevel_of(BevelStyle::Emboss, BevelTechnique::Smooth);
+        b.size = 41.0;
+        let g = bevel_geom(&b);
+        assert_eq!((g.width, g.depth), (21.0, 21.0));
+        b.size = 5.0;
+        assert_eq!(bevel_geom(&b).width, 3.0);
+        // The first row past the height blur's reach still slopes (its upper neighbour is raised),
+        // so it shades; the row after it does not.
+        let shape = square(60, 20, 40);
+        b.size = 9.0;
+        b.angle = 90.0;
+        let (m, _) = bevel_maps(&shape, &b, &GlobalLight::default(), &no_tex(), &PreparedPatterns::new(&[], PREPARED_PATTERN_BYTES));
+        let reach = tent_kernel(bevel_geom(&b).width).0 as usize;
+        let row = 39 + reach + 1; // last shape row + reach + 1: height 0, neighbour above raised
+        assert!(m[3].v[row * 60 + 30] > 0.0, "{}", m[3].v[row * 60 + 30]);
+        assert_eq!(m[3].v[(row + 1) * 60 + 30], 0.0);
     }
 
     #[test]

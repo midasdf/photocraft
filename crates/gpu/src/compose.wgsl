@@ -1029,7 +1029,9 @@ fn fs_mbevelshade(in: VOut) -> @location(0) vec4<f32> {
     let se = op.p0.w;
     let s = textureLoad(layer_tex, p, 0).r;
     var region = s;
-    let on_bevel = textureLoad(tex_a, p, 0).r > 1e-5; // effects::BEVEL_H_EPS
+    // effects::bevel_maps' on_bevel: the pixel's or a 4-neighbour's height above BEVEL_H_EPS.
+    let hmax = max(max(ra(p), max(ra(p + vec2(1, 0)), ra(p - vec2(1, 0)))), max(ra(p + vec2(0, 1)), ra(p - vec2(0, 1))));
+    let on_bevel = hmax > 1e-5;
     if (op.p1.y > 1.5) {
         // Emboss styles' outside half: strictly outside the shape.
         region = select(0.0, 1.0, s <= INSIDE_EPS && on_bevel);
