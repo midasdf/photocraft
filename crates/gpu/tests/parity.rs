@@ -1237,7 +1237,7 @@ fn big_doc() -> Document {
     grp.opacity = 0.9;
     d.layers.push(grp);
     let stops = vec![(0.0, Color::rgb(1.0, 0.0, 0.0)), (0.6, Color::rgb(0.0, 1.0, 0.2)), (1.0, Color::rgb(0.1, 0.1, 0.9))];
-    let mut grad = Layer::new("grad", LayerContent::Fill(Fill::Gradient { stops, angle: 30.0, scale: 0.8, style: GradientStyle::Radial, reverse: false }));
+    let mut grad = Layer::new("grad", LayerContent::Fill(Fill::gradient(stops, 30.0, 0.8, GradientStyle::Radial, false)));
     grad.opacity = 0.3;
     grad.blend = BlendMode::Overlay;
     d.layers.push(grad);
