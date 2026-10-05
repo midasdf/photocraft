@@ -28,8 +28,9 @@ pub const GET: &str = "gradient.fill.get";
 
 /// Largest coordinate accepted for a start/end point (pixels).
 const MAX_COORD: f32 = 1.0e7;
-/// Scale range of a live gradient (a fraction; the PSD stores it as a percentage).
-const SCALE_RANGE: (f32, f32) = (1e-3, 1e4);
+/// Scale range of a gradient fill (a fraction): Photoshop allows 10–150 % (the PSD stores a
+/// percentage). A handle drag past it clamps, so the far handle stops where the scale does.
+const SCALE_RANGE: (f32, f32) = (0.1, 1.5);
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }

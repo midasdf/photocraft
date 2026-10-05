@@ -27,7 +27,7 @@ fn create_makes_a_canvas_aligned_fill_layer_with_the_drag_as_handles() {
     let r = s
         .execute(
             CREATE,
-            json!({"from": [6, 20], "to": [40, 4], "style": "radial", "stops": [[0, "#ff0000"], [1, "#0000ff"]], "opacity": 50, "mode": "multiply"}),
+            json!({"from": [14, 16], "to": [34, 8], "style": "radial", "stops": [[0, "#ff0000"], [1, "#0000ff"]], "opacity": 50, "mode": "multiply"}),
         )
         .unwrap();
     assert_eq!(layer_count(&s), 2);
@@ -42,7 +42,7 @@ fn create_makes_a_canvas_aligned_fill_layer_with_the_drag_as_handles() {
     assert!(!align && dither);
     let g = s.execute(GET, json!({})).unwrap();
     let (from, to) = (g["from"].as_array().unwrap(), g["to"].as_array().unwrap());
-    for (v, want) in from.iter().chain(to).zip([6.0, 20.0, 40.0, 4.0]) {
+    for (v, want) in from.iter().chain(to).zip([14.0, 16.0, 34.0, 8.0]) {
         assert!((v.as_f64().unwrap() - want).abs() < 1e-3, "{g}");
     }
     // One undo step removes the layer.
@@ -70,7 +70,7 @@ fn create_masks_the_layer_with_the_selection() {
 /// Pixel parity: a live gradient composites exactly like painting the same drag.
 fn parity(depth: u32, background: &str, extra: Value, select: bool, tol: f32) {
     for style in STYLES {
-        for (from, to) in [([5.0, 7.0], [41.0, 26.0]), ([30.0, 16.0], [22.0, 3.0])] {
+        for (from, to) in [([10.0, 9.0], [34.0, 22.0]), ([30.0, 16.0], [22.0, 3.0])] {
             let mut p = json!({"from": from, "to": to, "style": style});
             for (k, v) in extra.as_object().unwrap() {
                 p[k] = v.clone();
@@ -113,13 +113,13 @@ fn set_moves_handles_and_restyles_in_one_undo_step() {
     s.execute(CREATE, json!({"from": [4, 4], "to": [40, 4]})).unwrap();
     let before = active_fill(&s);
     let h0 = s.active().unwrap().history.past_len();
-    let g = s.execute(SET, json!({"to": [24, 28]})).unwrap();
-    assert!((g["to"][0].as_f64().unwrap() - 24.0).abs() < 1e-3 && (g["from"][0].as_f64().unwrap() - 4.0).abs() < 1e-3, "{g}");
+    let g = s.execute(SET, json!({"to": [20, 22]})).unwrap();
+    assert!((g["to"][0].as_f64().unwrap() - 20.0).abs() < 1e-3 && (g["from"][0].as_f64().unwrap() - 4.0).abs() < 1e-3, "{g}");
     assert_eq!(s.active().unwrap().history.past_len(), h0 + 1);
     // Changing the style alone keeps the handles where they are.
     let g = s.execute(SET, json!({"style": "angle"})).unwrap();
     assert_eq!(g["style"], "angle");
-    assert!((g["to"][1].as_f64().unwrap() - 28.0).abs() < 1e-3, "{g}");
+    assert!((g["to"][1].as_f64().unwrap() - 22.0).abs() < 1e-3, "{g}");
     let g = s.execute(SET, json!({"angle": 45, "scale": 80, "offset": [10, -5], "reverse": true, "dither": false, "midpoints": [0.3]})).unwrap();
     assert_eq!(g["angle"], 45.0);
     assert!((g["scale"].as_f64().unwrap() - 80.0).abs() < 1e-3);
@@ -266,4 +266,10 @@ fn commands_fail_gracefully() {
     s.execute(SET, json!({"scale": 1e30, "angle": 1e9, "offset": [1e4, -1e4]})).unwrap();
     let g = s.execute(GET, json!({})).unwrap();
     assert!(g["scale"].as_f64().unwrap().is_finite() && g["from"][0].as_f64().unwrap().is_finite());
+    // Scale stays within Photoshop's 10–150 %, also for a handle dragged far away.
+    assert!((g["scale"].as_f64().unwrap() - 150.0).abs() < 1e-3, "{g}");
+    let g = s.execute(SET, json!({"from": [0, 0], "to": [1e6, 0]})).unwrap();
+    assert!((g["scale"].as_f64().unwrap() - 150.0).abs() < 1e-3, "{g}");
+    let g = s.execute(SET, json!({"scale": 1})).unwrap();
+    assert!((g["scale"].as_f64().unwrap() - 10.0).abs() < 1e-3, "{g}");
 }
