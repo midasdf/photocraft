@@ -1691,6 +1691,12 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 crate::vector_ui::pen_up(app);
             }
             let Some(mut d) = app.drag.take() else { return };
+            // A Move-tool click (no pointer move in between) selects, it never moves: snapping
+            // the release point would otherwise nudge the layer onto a nearby edge.
+            if d.tool == Tool::Move && d.points.len() < 2 {
+                app.move_preview = None;
+                return;
+            }
             if d.points.last().is_none_or(|p| p[0] != x || p[1] != y) {
                 d.points.push([x, y, d.points.last().map_or(1.0, |p| p[2])]);
                 app.stylus.record_point();

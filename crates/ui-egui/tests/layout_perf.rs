@@ -144,6 +144,27 @@ fn auto_select_moves_the_layer_under_the_pointer() {
 }
 
 #[test]
+fn a_move_tool_click_selects_without_moving() {
+    // Snapping stays on (the default): it used to pull the release point onto a nearby edge, so
+    // a plain click nudged the layer (and recomposited the whole document).
+    let (mut h, k) = app();
+    h.state_mut().ui.tool = Tool::Move;
+    h.state_mut().ui.tool_options.move_auto_select = true;
+    for id in [k.text, k.shape, k.pixel, k.text] {
+        let before = (bounds(&h, id), h.state().session.active().expect("doc").history.entries().len());
+        let p = screen(&h, point_on(&h, id));
+        h.event(Event::PointerMoved(p));
+        h.step();
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.step();
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+        assert_eq!(h.state().session.active().and_then(|s| s.active_layer), Some(id), "the click selects the layer under it");
+        assert_eq!((bounds(&h, id), h.state().session.active().expect("doc").history.entries().len()), before, "and moves nothing");
+    }
+}
+
+#[test]
 fn selecting_recomposites_nothing_and_hiding_only_the_layer() {
     let (mut h, k) = app();
     for id in [k.text, k.group, k.smart, k.shape] {

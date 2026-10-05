@@ -246,7 +246,9 @@ fn main() {
     let names = ["Gallery", "Products", "Hero", "Header", "Footer"];
     rows.time("click a Layers panel row", || {
         k += 1;
-        let Some(p) = h.query_by_label(names[k % names.len()]).map(|n| n.rect().center()) else { return f64::NAN };
+        // The row is the widest node with the name (its disclosure triangle has it too).
+        let row = h.query_all_by_label(names[k % names.len()]).map(|n| n.rect()).max_by(|a, b| a.width().total_cmp(&b.width()));
+        let Some(p) = row.map(|r| r.center()) else { return f64::NAN };
         h.event(Event::PointerMoved(p));
         let a = frame(&mut h);
         h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
@@ -322,7 +324,9 @@ fn main() {
             h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
             let f1 = frame(&mut h);
             h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-            f0.max(f1).max(frame(&mut h)).max(frame(&mut h))
+            let f2 = frame(&mut h);
+            let f3 = frame(&mut h);
+            f0.max(f1).max(f2).max(f3)
         });
     }
     if let Some(from) = point_on(&h, headline) {
