@@ -1619,11 +1619,12 @@ pub fn properties_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     let Some(st) = app.session.active() else { return };
     let Some(id) = st.active_layer else { return };
-    let Some(layer) = st.doc.layer(id).cloned() else { return };
+    let Some(layer) = st.doc.layer(id) else { return };
     // The floating card appears for adjustment and fill layers (their controls live here).
     if !matches!(layer.content, LayerContent::Adjustment(_) | LayerContent::Fill(_)) {
         return;
     }
+    let layer = layer.clone();
     let t = Tokens::get(ctx);
     let canvas = app.last_canvas_rect;
     let width = 320.0;
@@ -1756,7 +1757,9 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         return;
     }
     let Some(id) = st.active_layer else { return };
-    let Some(layer) = st.doc.layer(id).cloned() else { return };
+    // Borrowed from the document snapshot: cloning the layer every frame copied whole groups.
+    let doc = st.doc.clone();
+    let Some(layer) = doc.layer(id) else { return };
     ui.horizontal(|ui| {
         let icon = match &layer.content {
             LayerContent::Adjustment(_) => "sliders-horizontal",
@@ -1781,12 +1784,12 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if let LayerContent::Adjustment(adj) = &layer.content {
         adjustment_controls(app, ui, id, adj);
     } else if layer.artboard().is_some() {
-        crate::artboard_ui::properties(app, ui, &layer);
+        crate::artboard_ui::properties(app, ui, layer);
     } else {
         if t.pro {
-            crate::layer_props_ui::properties(app, ui, &layer);
+            crate::layer_props_ui::properties(app, ui, layer);
         } else {
-            layer_controls(app, ui, &layer);
+            layer_controls(app, ui, layer);
         }
         if matches!(layer.content, LayerContent::Text(_)) {
             crate::type_tool::type_properties(app, ui);

@@ -278,8 +278,16 @@ fn main() {
             continue;
         };
         // Back and forth, so every other drag returns the layer where it started.
-        let drags: Vec<Vec<f64>> = (0..reps).map(|i| drag(&mut h, from, if i.is_multiple_of(2) { [37.0, 23.0] } else { [-37.0, -23.0] }, 8)).collect();
+        let mut commit = Vec::new();
+        let drags: Vec<Vec<f64>> = (0..reps)
+            .map(|i| {
+                let d = drag(&mut h, from, if i.is_multiple_of(2) { [37.0, 23.0] } else { [-37.0, -23.0] }, 8);
+                commit.push(h.state().perf.command_ms);
+                d
+            })
+            .collect();
         move_rows(&mut rows, label, &drags);
+        rows.add(&format!("  of which layer.translate ({label})"), commit);
     }
     // Auto-Select on: a click on the canvas selects the layer under the pointer; a press on a
     // type layer that isn't selected drags it.
@@ -337,6 +345,22 @@ fn spin(h: &mut H, what: &str, [pixel, text, shape, group, smart, headline]: [La
             k += 1;
             let s = if k.is_multiple_of(2) { 1.0 } else { -1.0 };
             drag(h, from, [30.0 * s, 20.0 * s], 30);
+        }
+        return;
+    }
+    if what == "click" {
+        h.state_mut().ui.tool = Tool::Move;
+        h.state_mut().ui.tool_options.move_auto_select = true;
+        let pts: Vec<[f64; 2]> = [text, pixel].iter().filter_map(|&id| point_on(h, id)).collect();
+        while t.elapsed().as_secs() < 20 && !pts.is_empty() {
+            k += 1;
+            let p = screen(h, pts[k % pts.len()][0], pts[k % pts.len()][1]);
+            h.event(Event::PointerMoved(p));
+            frame(h);
+            h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+            frame(h);
+            h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+            settle(h, 2);
         }
         return;
     }
