@@ -1076,7 +1076,7 @@ fn combine(a: &Surface, b: &Surface, area: Rect, f: impl Fn(f32, f32) -> f32) ->
 /// Move a layer's pixels, linked mask and type by whole pixels (vectors move via
 /// `vector_cmds::translate_vectors`).
 pub(crate) fn translate_layer(doc: &Document, l: &mut Layer, dx: i32, dy: i32) {
-    use photocraft_algo::resample::translate_surface;
+    use crate::layer_multi_cmds::shift_surface as translate_surface;
     // Linked patterns in the layer's effects move with it.
     if let Some(r) = &mut l.effects.reference {
         *r = (r.0 + f64::from(dx), r.1 + f64::from(dy));

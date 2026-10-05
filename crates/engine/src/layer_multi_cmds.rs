@@ -282,9 +282,20 @@ pub fn moved(doc: &Document, ids: &[LayerId], dx: i32, dy: i32) -> Result<Docume
     Ok(out)
 }
 
+/// `photocraft_algo::resample::translate_surface` with the content scan cached per tile (a Move
+/// drag shifts the same layers every frame; scanning them each time cost more than the copy).
+pub(crate) fn shift_surface(s: &photocraft_raster::Surface, dx: i32, dy: i32) -> photocraft_raster::Surface {
+    let mut out = photocraft_raster::Surface::with_default(s.format(), &s.default_pixel());
+    let r = photocraft_compose::bounds::content_bounds(s);
+    if !r.is_empty() {
+        out.write_interleaved(r.translate(dx, dy), &s.to_interleaved(r));
+    }
+    out
+}
+
 /// [`crate::commands::translate_layer`] plus the vector side, without re-rendering anything.
 fn shift_shown(doc: &Document, l: &mut Layer, dx: i32, dy: i32) {
-    use photocraft_algo::resample::translate_surface;
+    use self::shift_surface as translate_surface;
     let a = photocraft_geom::Affine::translate(f64::from(dx), f64::from(dy));
     if let Some(r) = &mut l.effects.reference {
         *r = (r.0 + f64::from(dx), r.1 + f64::from(dy));
