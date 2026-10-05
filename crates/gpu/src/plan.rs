@@ -185,7 +185,7 @@ pub struct Pass<'a> {
     /// Extra shader flags (`F_KNOCKOUT`, …).
     pub flags: u32,
     /// 4096-entry LUT rows (Levels / Curves / Gradient map / gradient stops).
-    pub lut: Option<Vec<[f32; 4096]>>,
+    pub lut: Option<Lut>,
     pub gradient: bool,
     /// Effect map sampled by `FxPaint`.
     pub map: Option<MapRef>,
@@ -788,14 +788,16 @@ impl<'a> Planner<'a> {
                         (*t, [r[0], r[1], r[2], c.alpha])
                     })
                     .collect();
-                let mut rows = vec![[0.0f32; 4096]; 4];
-                for k in 0..4096 {
-                    let v = sample_stops4(&conv, k as f32 / 4095.0);
-                    for (ch, row) in rows.iter_mut().enumerate() {
-                        row[k] = v[ch];
+                p.lut = memo_lut(&format!("fill {conv:?}"), || {
+                    let mut rows = vec![[0.0f32; 4096]; 4];
+                    for k in 0..4096 {
+                        let v = sample_stops4(&conv, k as f32 / 4095.0);
+                        for (ch, row) in rows.iter_mut().enumerate() {
+                            row[k] = v[ch];
+                        }
                     }
-                }
-                p.lut = Some(rows);
+                    Some(rows)
+                });
             }
             // Pattern fills fall back to the CPU compositor (see `check`).
             Fill::Pattern { .. } => {}
@@ -850,7 +852,7 @@ impl<'a> Planner<'a> {
         }
         let mut p = Pass::new(Kernel::Adjust, 0);
         p.a = Some(src);
-        let (kind, params, lut) = adjustment_program(adj, self.cx.transfer);
+        let (kind, params, lut) = memo_program(adj, self.cx.transfer);
         p.adjust_kind = kind;
         p.params = params;
         p.lut = lut;
@@ -1120,14 +1122,16 @@ impl<'a> Planner<'a> {
                 p.params[2][0] = g.offset.0;
                 p.params[2][1] = g.offset.1;
                 p.params[2][2] = 1.0;
-                let mut rows = vec![[0.0f32; 4096]; 4];
-                for k in 0..4096 {
-                    let v = photocraft_compose::effects::sample_gradient(g, k as f32 / 4095.0);
-                    for (ch, row) in rows.iter_mut().enumerate() {
-                        row[k] = v[ch];
+                p.lut = memo_lut(&format!("gradient {g:?}"), || {
+                    let mut rows = vec![[0.0f32; 4096]; 4];
+                    for k in 0..4096 {
+                        let v = photocraft_compose::effects::sample_gradient(g, k as f32 / 4095.0);
+                        for (ch, row) in rows.iter_mut().enumerate() {
+                            row[k] = v[ch];
+                        }
                     }
-                }
-                p.lut = Some(rows);
+                    Some(rows)
+                });
             }
             Paint::Pattern(pat, pl) => {
                 p.params[2][2] = 2.0;
@@ -1257,6 +1261,56 @@ fn lut_rows(f: impl Fn(usize, f32) -> f32, rows: usize) -> Vec<[f32; 4096]> {
 }
 
 type Program = (i32, [[f32; 4]; 4], Option<Vec<[f32; 4096]>>);
+
+/// LUT rows of a pass (4096 entries each), shared between plans.
+pub type Lut = std::sync::Arc<Vec<[f32; 4096]>>;
+
+type Memo<T> = std::sync::Mutex<std::collections::HashMap<u64, T>>;
+
+fn memo_key(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
+}
+
+/// Look `key` up in `cache`, else build and remember it (the cache is dropped past 512 entries).
+fn memo<T: Clone>(cache: &Memo<T>, key: &str, build: impl FnOnce() -> T) -> T {
+    let k = memo_key(key);
+    if let Some(v) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&k) {
+        return v.clone();
+    }
+    let v = build();
+    let mut c = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if c.len() > 512 {
+        c.clear();
+    }
+    c.insert(k, v.clone());
+    v
+}
+
+/// The LUT rows `build` makes from what `key` describes (a `Debug` rendering of everything they
+/// depend on), built once and shared: every refresh plans the document again, and resampling
+/// gradients per refresh cost milliseconds on layouts with many of them (#125). The shared `Arc`
+/// also lets the compositor keep the uploaded texture.
+fn memo_lut(key: &str, build: impl FnOnce() -> Option<Vec<[f32; 4096]>>) -> Option<Lut> {
+    static CACHE: std::sync::OnceLock<Memo<Option<Lut>>> = std::sync::OnceLock::new();
+    memo(CACHE.get_or_init(Default::default), key, || build().map(std::sync::Arc::new))
+}
+
+/// [`adjustment_program`] with its LUT shared like [`memo_lut`]'s (keyed by the settings).
+fn memo_program(adj: &Adjustment, transfer: Transfer) -> (i32, [[f32; 4]; 4], Option<Lut>) {
+    let fresh = || {
+        let (k, p, l) = adjustment_program(adj, transfer);
+        (k, p, l.map(std::sync::Arc::new))
+    };
+    // Lookup tables are large: describing one costs more than building its program.
+    if matches!(adj, Adjustment::ColorLookup { .. }) {
+        return fresh();
+    }
+    static CACHE: std::sync::OnceLock<Memo<(i32, [[f32; 4]; 4], Option<Lut>)>> = std::sync::OnceLock::new();
+    memo(CACHE.get_or_init(Default::default), &format!("{adj:?} {transfer:?}"), fresh)
+}
 
 /// A CPU LUT (4096 entries) as one texture row.
 fn to_row(t: &[f32]) -> [f32; 4096] {

@@ -344,6 +344,9 @@ pub struct Compositor {
     /// Effect temporaries (R32F, region sized) and the frame they were last used.
     temps: Vec<(Tex, u64)>,
     patterns: HashMap<String, (u64, Tex)>,
+    /// Uploaded pass LUTs, keyed by the planner's shared rows (`plan::Lut`, held so the key
+    /// stays theirs), with the frame they were last used.
+    luts: HashMap<usize, (plan::Lut, wgpu::Texture, wgpu::TextureView, u64)>,
     max_dim: u32,
     frame: u64,
     acc_format: wgpu::TextureFormat,
@@ -488,6 +491,7 @@ impl Compositor {
             fx: HashMap::new(),
             temps: Vec::new(),
             patterns: HashMap::new(),
+            luts: HashMap::new(),
             max_dim: device.limits().max_texture_dimension_2d,
             frame: 0,
             acc_format,
@@ -728,12 +732,28 @@ impl Compositor {
         let bg0 = uniform_group(device, &self.kit.bgl0, &ubuf);
 
         // Per-pass texture bind groups (chunk-independent: pool slots are reused per chunk).
+        // Passes clipped away from every chunk (most of them, refreshing a small area of a
+        // layout) are never drawn: no bind group, no LUT.
+        let drawn: Vec<bool> = plan.passes.iter().map(|p| p.clip.is_none_or(|c| chunks.iter().any(|ch| !c.intersect(ch).is_empty()))).collect();
+        // LUT textures, uploaded once per shared table.
+        let frame = self.frame;
+        for (p, _) in plan.passes.iter().zip(&drawn).filter(|(_, d)| **d) {
+            if let Some(l) = &p.lut {
+                let e = self.luts.entry(Arc::as_ptr(l) as usize).or_insert_with(|| {
+                    let (t, v) = lut_texture(device, queue, l);
+                    (l.clone(), t, v, frame)
+                });
+                e.3 = frame;
+            }
+        }
+        self.luts.retain(|_, e| frame.saturating_sub(e.3) < 240);
         let resident_views: Vec<&wgpu::TextureView> = bound.keys.iter().map(|k| &self.residents[k].view).collect();
-        let luts: Vec<_> = plan.passes.iter().map(|p| p.lut.as_ref().map(|rows| lut_texture(device, queue, rows))).collect();
+        let luts: Vec<Option<&wgpu::TextureView>> =
+            plan.passes.iter().map(|p| p.lut.as_ref().and_then(|l| self.luts.get(&(Arc::as_ptr(l) as usize))).map(|e| &e.2)).collect();
         let dummy = &self.kit.dummy;
         let mut bg1 = Vec::with_capacity(plan.passes.len());
         for (i, p) in plan.passes.iter().enumerate() {
-            if p.kernel.entry().is_none() {
+            if p.kernel.entry().is_none() || !drawn[i] {
                 bg1.push(None);
                 continue;
             }
@@ -741,7 +761,7 @@ impl Compositor {
             let (tex, mask) = &bound.views[i];
             let tv = tex.map_or(slot(p.d), |(k, _)| resident_views[k]);
             let mv = mask.map_or(dummy, |(k, _)| resident_views[k]);
-            let lv = luts[i].as_ref().map_or(dummy, |(_, v)| v);
+            let lv = luts[i].unwrap_or(dummy);
             let map = bound.maps[i].as_ref().map_or(dummy, |(v, _)| v);
             let pat = bound.patterns[i].as_ref().unwrap_or(dummy);
             bg1.push(Some(texture_group(device, &self.kit.bgl1, &[slot(p.a), slot(p.b), tv, mv, lv, slot(p.c), map, pat])));
