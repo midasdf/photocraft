@@ -586,6 +586,15 @@ fn adjust(c: vec3<f32>) -> vec3<f32> {
 
 // ---- fills ----------------------------------------------------------------------------------
 
+// effects::linear_u: end points at the centre ± half the chord, snapped to half pixels;
+// pixel corners sampled.
+fn linear_u(c: f32, s: f32, chord: f32, dx: f32, dy: f32) -> f32 {
+    let hx = floor(c * chord + 0.5) / 2.0;
+    let hy = floor(-s * chord + 0.5) / 2.0;
+    let n = max(hx * hx + hy * hy, 1e-6);
+    return ((dx - 0.5) * hx + (dy - 0.5) * hy) / n;
+}
+
 fn gradient_t(d: vec2<i32>) -> f32 {
     // p0 = (angle°, scale, reverse, style), p1 = frame (x0, y0, w, h)
     let w = max(op.p1.z, 1.0);
@@ -607,9 +616,9 @@ fn gradient_t(d: vec2<i32>) -> f32 {
     switch i32(op.p0.w) {
         case 1: { t = sqrt(dx * dx + dy * dy) / (len / 2.0); }                  // Radial
         case 2: { t = rem_euclid((a - atan2(-dy, dx)) / 6.28318530718, 1.0); }   // Angle
-        case 3: { t = abs(along / (chord / 2.0)); }                             // Reflected
+        case 3: { t = abs(linear_u(c, s, chord, dx, dy)); }                     // Reflected
         case 4: { t = (abs(along) + abs(across)) / (len / 2.0); }               // Diamond
-        default: { t = along / chord + 0.5; }                                   // Linear
+        default: { t = linear_u(c, s, chord, dx, dy) * 0.5 + 0.5; }             // Linear
     }
     t = clamp(t, 0.0, 1.0);
     if (op.p0.z > 0.5) { t = 1.0 - t; }

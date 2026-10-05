@@ -438,8 +438,8 @@ pub fn gradient_t(style: GradientStyle, angle: f32, scale: f32, reverse: bool, o
     // span the width / height.
     let chord = (w / c.abs().max(1e-6)).min(h / s.abs().max(1e-6)).max(1.0) * scale.max(1e-3);
     let mut t = match style {
-        GradientStyle::Linear => along / chord + 0.5,
-        GradientStyle::Reflected => (along / (chord / 2.0)).abs(),
+        GradientStyle::Linear => linear_u(c, s, chord, dx, dy) * 0.5 + 0.5,
+        GradientStyle::Reflected => linear_u(c, s, chord, dx, dy).abs(),
         GradientStyle::Radial => (dx * dx + dy * dy).sqrt() / (len / 2.0),
         GradientStyle::Diamond => (along.abs() + across.abs()) / (len / 2.0),
         // Clockwise sweep starting at the gradient angle.
@@ -447,6 +447,20 @@ pub fn gradient_t(style: GradientStyle, angle: f32, scale: f32, reverse: bool, o
     };
     t = t.clamp(0.0, 1.0);
     if reverse { 1.0 - t } else { t }
+}
+
+/// Position along a linear / reflected gradient, `-1..=1` between its end points, for a pixel
+/// centre at `(dx, dy)` from the frame centre. Photoshop places the end points at the centre ±
+/// half the chord along the angle, snapped to the half-pixel grid, and samples pixel corners
+/// (top-left) rather than centres. Fitted on psd-tools layer_effects.psd (an 87° overlay on a
+/// 600 × 60 text line runs along (3, 60): 87.14°, centred half a pixel up-left; max error
+/// 5.8 → 1.8/255) and shape-fx2 (a 45° overlay on a 29 px shape: 2.8 → 1.1/255); also
+/// gradient-fill.psd 1.9 → 0.5/255. Keep in sync with `gradient_t` in compose.wgsl.
+pub fn linear_u(c: f32, s: f32, chord: f32, dx: f32, dy: f32) -> f32 {
+    let hx = (c * chord + 0.5).floor() / 2.0;
+    let hy = (-s * chord + 0.5).floor() / 2.0;
+    let n = (hx * hx + hy * hy).max(1e-6);
+    ((dx - 0.5) * hx + (dy - 0.5) * hy) / n
 }
 
 /// Samples colour and opacity stops at `t`.
@@ -1379,9 +1393,10 @@ mod tests {
         let b = Rect::new(0, 0, 100, 100);
         let t = |s, x, y| gradient_t(s, 0.0, 1.0, false, (0.0, 0.0), b, x, y);
         assert!(t(GradientStyle::Linear, 0.0, 50.0) < 0.01);
-        assert!((t(GradientStyle::Linear, 50.0, 50.0) - 0.5).abs() < 1e-6);
+        // Linear / reflected sample pixel corners: the centre is reached half a pixel later.
+        assert!((t(GradientStyle::Linear, 50.5, 50.0) - 0.5).abs() < 1e-6);
         assert!(t(GradientStyle::Linear, 100.0, 50.0) > 0.99);
-        assert!(t(GradientStyle::Reflected, 50.0, 50.0) < 1e-6);
+        assert!(t(GradientStyle::Reflected, 50.5, 50.0) < 1e-6);
         assert!((t(GradientStyle::Reflected, 0.0, 50.0) - 1.0).abs() < 1e-6);
         assert!(t(GradientStyle::Radial, 50.0, 50.0) < 1e-6);
         assert!((t(GradientStyle::Radial, 50.0, 0.0) - 1.0).abs() < 1e-6);
@@ -1390,6 +1405,19 @@ mod tests {
         assert!((ang - 0.75).abs() < 1e-3, "{ang}");
         let rev = gradient_t(GradientStyle::Linear, 0.0, 1.0, true, (0.0, 0.0), b, 0.0, 50.0);
         assert!(rev > 0.99);
+    }
+
+    #[test]
+    fn linear_gradients_snap_end_points_to_half_pixels() {
+        // 87° over 600 × 60: the half vector (1.57, -30.0) snaps to (1.5, -30): 87.14°.
+        let (s, c) = 87f32.to_radians().sin_cos();
+        let chord = (600.0 / c).min(60.0 / s);
+        let u = |dx: f32, dy: f32| linear_u(c, s, chord, dx, dy);
+        assert!((u(0.5, 0.5)).abs() < 1e-6, "corner of the centre pixel");
+        assert!((u(0.5, -29.5) - 30.0 * 30.0 / (1.5 * 1.5 + 900.0)).abs() < 1e-5);
+        assert!((u(300.5, 0.5) - 300.0 * 1.5 / (1.5 * 1.5 + 900.0)).abs() < 1e-5);
+        // Axis-aligned gradients keep their exact length.
+        assert!((linear_u(1.0, 0.0, 29.0, 15.0, 3.0) - 1.0).abs() < 1e-6);
     }
 
     #[test]
