@@ -438,9 +438,13 @@ pub fn gradient_t(style: GradientStyle, angle: f32, scale: f32, reverse: bool, o
     // shape-fx2), an 87° one on a 600 × 60 text line 60 px (layer_effects); axis-aligned angles
     // span the width / height.
     let chord = (w / c.abs().max(1e-6)).min(h / s.abs().max(1e-6)).max(1.0) * scale.max(1e-3);
+    // Linear / Reflected sample the pixel's top-left corner, half a pixel before its centre
+    // (with the whole-pixel end points of `fill_layout`: layer_effects' overlay 5.8 → 1.8/255,
+    // shape-fx2 2.8 → 1.1/255, gradient-fill.psd 1.9 → 0.5/255).
+    let corner = 0.5 * (c - s);
     let mut t = match style {
-        GradientStyle::Linear => linear_u(c, s, chord, dx, dy) * 0.5 + 0.5,
-        GradientStyle::Reflected => linear_u(c, s, chord, dx, dy).abs(),
+        GradientStyle::Linear => (along - corner) / chord + 0.5,
+        GradientStyle::Reflected => ((along - corner) / (chord / 2.0)).abs(),
         GradientStyle::Radial => (dx * dx + dy * dy).sqrt() / (len / 2.0),
         GradientStyle::Diamond => (along.abs() + across.abs()) / (len / 2.0),
         // Clockwise sweep starting at the gradient angle.
@@ -448,20 +452,6 @@ pub fn gradient_t(style: GradientStyle, angle: f32, scale: f32, reverse: bool, o
     };
     t = t.clamp(0.0, 1.0);
     if reverse { 1.0 - t } else { t }
-}
-
-/// Position along a linear / reflected gradient, `-1..=1` between its end points, for a pixel
-/// centre at `(dx, dy)` from the frame centre. Photoshop places the end points at the centre ±
-/// half the chord along the angle, snapped to the half-pixel grid, and samples pixel corners
-/// (top-left) rather than centres. Fitted on psd-tools layer_effects.psd (an 87° overlay on a
-/// 600 × 60 text line runs along (3, 60): 87.14°, centred half a pixel up-left; max error
-/// 5.8 → 1.8/255) and shape-fx2 (a 45° overlay on a 29 px shape: 2.8 → 1.1/255); also
-/// gradient-fill.psd 1.9 → 0.5/255. Keep in sync with `gradient_t` in compose.wgsl.
-pub fn linear_u(c: f32, s: f32, chord: f32, dx: f32, dy: f32) -> f32 {
-    let hx = (c * chord + 0.5).floor() / 2.0;
-    let hy = (-s * chord + 0.5).floor() / 2.0;
-    let n = (hx * hx + hy * hy).max(1e-6);
-    ((dx - 0.5) * hx + (dy - 0.5) * hy) / n
 }
 
 /// Samples colour and opacity stops at `t`.
@@ -635,13 +625,14 @@ fn paint_fx(
         FxPaint::Color(c) => paint_color(dst, m, rgb(c), blend, opacity),
         FxPaint::Gradient(g) => {
             let prepared = PreparedGradient::new(g);
+            let (angle, scale, offset) = crate::fill_layout::gradient_layout(g.style, g.angle, g.scale, g.offset, shape_bounds);
             let w = big.width() as usize;
             paint(
                 dst,
                 m,
                 |i| {
                     let (x, y) = ((big.x0 + (i % w) as i32) as f32 + 0.5, (big.y0 + (i / w) as i32) as f32 + 0.5);
-                    prepared.sample(gradient_t(g.style, g.angle, g.scale, g.reverse, g.offset, shape_bounds, x, y))
+                    prepared.sample(gradient_t(g.style, angle, scale, g.reverse, offset, shape_bounds, x, y))
                 },
                 blend,
                 opacity,
@@ -1439,16 +1430,15 @@ mod tests {
     }
 
     #[test]
-    fn linear_gradients_snap_end_points_to_half_pixels() {
-        // 87° over 600 × 60: the half vector (1.57, -30.0) snaps to (1.5, -30): 87.14°.
-        let (s, c) = 87f32.to_radians().sin_cos();
-        let chord = (600.0 / c).min(60.0 / s);
-        let u = |dx: f32, dy: f32| linear_u(c, s, chord, dx, dy);
-        assert!((u(0.5, 0.5)).abs() < 1e-6, "corner of the centre pixel");
-        assert!((u(0.5, -29.5) - 30.0 * 30.0 / (1.5 * 1.5 + 900.0)).abs() < 1e-5);
-        assert!((u(300.5, 0.5) - 300.0 * 1.5 / (1.5 * 1.5 + 900.0)).abs() < 1e-5);
-        // Axis-aligned gradients keep their exact length.
-        assert!((linear_u(1.0, 0.0, 29.0, 15.0, 3.0) - 1.0).abs() < 1e-6);
+    fn effect_gradients_snap_end_points_and_sample_corners() {
+        // 87° over 600 × 60 at (99, 422): end points (397, 482) and (400, 422), so the overlay runs
+        // along (3, -60) from its midpoint (398.5, 452), sampled at pixel corners.
+        let frame = Rect::new(99, 422, 699, 482);
+        let (a, sc, o) = crate::fill_layout::gradient_layout(GradientStyle::Linear, 87.0, 1.0, (0.0, 0.0), frame);
+        assert!((a - (60f32).atan2(3.0).to_degrees()).abs() < 1e-3, "{a}");
+        let t = |x: f32, y: f32| gradient_t(GradientStyle::Linear, a, sc, false, o, frame, x, y);
+        assert!((t(399.0, 452.5) - 0.5).abs() < 1e-4, "{}", t(399.0, 452.5));
+        assert!(t(400.5, 422.5) > 0.99 && t(397.5, 482.5) < 0.01);
     }
 
     #[test]

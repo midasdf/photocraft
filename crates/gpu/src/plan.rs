@@ -1118,10 +1118,12 @@ impl<'a> Planner<'a> {
             Paint::None => {}
             Paint::Color(c) => p.color = [c[0], c[1], c[2], 1.0],
             Paint::Gradient(g) => {
-                p.params[0] = [g.angle, g.scale, if g.reverse { 1.0 } else { 0.0 }, style_index(g.style)];
+                // effects::paint_fx: whole-pixel end points (fill_layout::gradient_layout).
+                let (angle, scale, offset) = photocraft_compose::fill_layout::gradient_layout(g.style, g.angle, g.scale, g.offset, sb);
+                p.params[0] = [angle, scale, if g.reverse { 1.0 } else { 0.0 }, style_index(g.style)];
                 p.params[1] = [sb.x0 as f32, sb.y0 as f32, sb.width() as f32, sb.height() as f32];
-                p.params[2][0] = g.offset.0;
-                p.params[2][1] = g.offset.1;
+                p.params[2][0] = offset.0;
+                p.params[2][1] = offset.1;
                 p.params[2][2] = 1.0;
                 let mut rows = vec![[0.0f32; 4096]; 4];
                 for k in 0..4096 {
