@@ -66,6 +66,7 @@ pub enum Tool {
     Gradient,
     PaintBucket,
     Type,
+    VerticalType,
     Hand,
     Zoom,
     SpotHealing,
@@ -94,7 +95,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 45] = [
+    pub const ALL: [Tool; 46] = [
         Tool::Move,
         Tool::RectMarquee,
         Tool::EllipseMarquee,
@@ -115,6 +116,7 @@ impl Tool {
         Tool::Gradient,
         Tool::PaintBucket,
         Tool::Type,
+        Tool::VerticalType,
         Tool::Hand,
         Tool::Zoom,
         Tool::SpotHealing,
@@ -166,6 +168,7 @@ impl Tool {
             Tool::Gradient => "Gradient Tool",
             Tool::PaintBucket => "Paint Bucket Tool",
             Tool::Type => "Horizontal Type Tool",
+            Tool::VerticalType => "Vertical Type Tool",
             Tool::Hand => "Hand Tool",
             Tool::Zoom => "Zoom Tool",
             Tool::SpotHealing => "Spot Healing Brush Tool",
@@ -191,6 +194,10 @@ impl Tool {
             Tool::CustomShape => "Custom Shape Tool",
         }
     }
+    pub fn is_type(self) -> bool {
+        matches!(self, Self::Type | Self::VerticalType)
+    }
+
     /// Retouching and painting tools that stroke with the brush (share the brush cursor and chip).
     pub fn is_brushlike(self) -> bool {
         matches!(
@@ -224,7 +231,7 @@ impl Tool {
             Tool::MagicWand => 'W',
             Tool::Crop | Tool::Slice | Tool::SliceSelect => 'C',
             Tool::Gradient | Tool::PaintBucket => 'G',
-            Tool::Type => 'T',
+            Tool::Type | Tool::VerticalType => 'T',
             Tool::Hand => 'H',
             Tool::Zoom => 'Z',
             Tool::SpotHealing | Tool::Healing | Tool::Patch => 'J',
@@ -252,7 +259,7 @@ impl Tool {
             Tool::MagicWand => "W",
             Tool::Crop => "C",
             Tool::Gradient | Tool::PaintBucket => "G",
-            Tool::Type => "T",
+            Tool::Type | Tool::VerticalType => "T",
             Tool::Hand => "✋",
             Tool::Zoom => "🔍",
             _ => "•",
